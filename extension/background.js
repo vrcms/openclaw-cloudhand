@@ -6,9 +6,7 @@ let connected = false;
 let sessionToken = null;
 let serverUrl = null;
 
-// 尝试加载运行时配置（由 VPS 上的 skill 自动生成）
-try { importScripts('config.js'); } catch(e) {}
-const DEFAULT_SERVER = (typeof CLOUDHAND_CONFIG !== 'undefined' && CLOUDHAND_CONFIG.wsUrl) ? CLOUDHAND_CONFIG.wsUrl : 'ws://YOUR_VPS_IP:9876/ws';
+const DEFAULT_SERVER = 'ws://YOUR_VPS_IP:9876/ws';
 
 // 启动时从 storage 读取配置并连接
 async function init() {

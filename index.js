@@ -355,8 +355,10 @@ function register(api) {
       for (const f of fs.readdirSync(extDir)) {
         fs.copyFileSync(path.join(extDir, f), path.join(tmpDir, f));
       }
-      // 写入 patched background.js
+      // 写入 patched background.js 到临时目录
       fs.writeFileSync(path.join(tmpDir, 'background.js'), patched);
+      // 同时更新 extension 目录里的 background.js（供直接加载扩展使用）
+      fs.writeFileSync(bgPath, patched);
       // 打包 zip
       execSync(`cd '${tmpDir}' && zip -r '${zipPath}' .`, { stdio: 'ignore' });
       console.log(`[cloudhand] Extension zip built with IP: ${publicIp}`);

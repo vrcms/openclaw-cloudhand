@@ -39,10 +39,12 @@ description: |
    # for t in tabs: print('🟢' if t.get('active') else '⚪', t.get('id'), t.get('title','')[:40], t.get('url','')[:60])
    ```
 
-2. **绝不操作用户自己的窗口**
-   - bridge 启动后 agentWindows 为空时，navigate 等操作会自动创建专属窗口（server.js 已内置）
-   - 每次操作前先 `curl -s http://127.0.0.1:9876/agent_windows` 确认有专属窗口
-   - 没有专属窗口 → server.js 自动在后台创建 `about:blank` 窗口，不打扰用户
+2. **铁律：只能操作 agent 专属窗口，严禁操作用户窗口**
+   - 每次操作前必须先 `curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9876/agent_windows` 检查
+   - 如果 windowIds 为空 → 先用 `/new_window` 创建专属窗口（`focused:false` 后台创建）
+   - 之后所有操作（navigate/click/type/scroll）都必须带上 `tabId` 参数，确保在专属窗口的 tab 内操作
+   - **禁止**：不检查 agentWindows 就直接 navigate/click（会跑到用户活动 tab）
+   - **禁止**：使用 `focused:true` 或 `active:true`（会抢用户焦点）
 
 3. **bridge 重启后配对还在，不需要重新配对**
    - 重启命令：`lsof -ti:9876 | xargs kill -9; cd ~/.openclaw/extensions/cloudhand && nohup node server.js > /tmp/cloudhand.log 2>&1 &`
@@ -255,6 +257,34 @@ curl -s -X POST http://127.0.0.1:9876/new_window -H 'Content-Type: application/j
 AGENT_WINDOW_ID=$(curl -s http://127.0.0.1:9876/agent_windows | python3 -c "import sys,json; ids=json.load(sys.stdin)['windowIds']; print(ids[0] if ids else '')")
 curl -s -X POST http://127.0.0.1:9876/new_tab \
   -H 'Content-Type: application/json' \
+  -d "{\"windowId\":$AGENT_WINDOW_ID}"
+
+# 关闭所有我的窗口（东哥要求时）
+curl -s -X POST http://127.0.0.1:9876/agent_windows/close_all
+```
+
+**例外**：东哥明确说「开新窗口」时才用 `new_window`。
+
+## 🛡️ 窗口管理铁律（必须遵守）
+
+**原则：我有一个专属窗口，所有任务在里面开新 tab，不新开窗口。**
+
+```bash
+# 查看我管理的窗口
+curl -s -H "Authorization: Bearer $APITOKEN" http://127.0.0.1:9876/agent_windows
+
+# 如果 windowIds 为空，先开一个专属窗口（只做一次）
+curl -s -X POST http://127.0.0.1:9876/new_window \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $APITOKEN" \
+  -d '{"url":"about:blank","focused":false}'
+# 记录返回的 windowId 到 TOOLS.md
+
+# 每次新任务：在专属窗口开新 tab（不要 new_window！）
+AGENT_WINDOW_ID=$(curl -s -H "Authorization: Bearer $APITOKEN" http://127.0.0.1:9876/agent_windows | python3 -c "import sys,json; ids=json.load(sys.stdin)['windowIds']; print(ids[0] if ids else '')")
+curl -s -X POST http://127.0.0.1:9876/new_tab \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $APITOKEN" \
   -d "{\"windowId\":$AGENT_WINDOW_ID}"
 
 # 关闭所有我的窗口（东哥要求时）

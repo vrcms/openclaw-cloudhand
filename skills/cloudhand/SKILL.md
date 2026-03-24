@@ -16,8 +16,8 @@ description: |
 1. **生成一次性下载链接**（60秒有效），发给用户下载 Chrome 扩展：
    ```bash
    APITOKEN=$(curl -s http://127.0.0.1:9876/token | python3 -c "import sys,json; print(json.load(sys.stdin)['apiToken'])")
-   curl -s -X POST -H "Authorization: Bearer $APITOKEN" http://127.0.0.1:18789/cloudhand/gen-download-link
-   # 返回: {"url":"http://<ip>:<port>/cloudhand/extension.zip?dltoken=xxx", "expiresIn":60}
+   curl -s -X POST -H "Authorization: Bearer $APITOKEN" http://127.0.0.1:9876/gen-download-link
+   # 返回: {"url":"http://<ip>:9876/download-ext?t=xxx", "expiresIn":60}
    ```
    把返回的 url 发给用户，用户在 60 秒内下载，zip 下载后自动删除。
 

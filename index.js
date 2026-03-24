@@ -34,7 +34,7 @@ function startBridge(pluginDir) {
   bridgeProcess = spawn('node', [serverPath], {
     detached: false,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, PORT: String(BRIDGE_PORT), HOST: BRIDGE_HOST }
+    env: { ...process.env, PORT: String(BRIDGE_PORT) }
   });
   bridgeProcess.stdout.on('data', d => console.log('[cloudhand]', d.toString().trim()));
   bridgeProcess.stderr.on('data', d => console.error('[cloudhand]', d.toString().trim()));

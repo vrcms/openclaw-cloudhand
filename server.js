@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 9876;
-const HOST = process.env.HOST || '127.0.0.1';
+const HOST = process.env.HOST || '0.0.0.0';
 const CONFIG_FILE = path.join(process.env.HOME || '/root', '.openclaw/chrome-bridge/config.json');
 
 // 确保配置目录存在

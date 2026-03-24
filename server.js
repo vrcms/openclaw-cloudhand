@@ -23,11 +23,31 @@ function saveConfig(cfg) {
 
 let config = loadConfig();
 
+// 如果没有 apiToken，自动生成一个并持久化
+if (!config.apiToken) {
+  config.apiToken = crypto.randomBytes(32).toString('hex');
+  saveConfig(config);
+  console.log('[Auth] Generated new apiToken');
+}
+
 // 内存中的 challenge（30秒有效，一次性）
 let pendingChallenge = null; // { code, expiresAt }
 
 const app = express();
 app.use(express.json());
+
+// 免鉴权端点白名单
+const PUBLIC_PATHS = new Set(['/status', '/config', '/pair/challenge', '/pair/revoke', '/token']);
+
+// Bearer Token 鉴权中间件
+app.use((req, res, next) => {
+  if (PUBLIC_PATHS.has(req.path)) return next();
+  const auth = req.headers['authorization'] || '';
+  const qtoken = req.query.token || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : qtoken;
+  if (token && token === config.apiToken) return next();
+  res.status(401).json({ error: 'Unauthorized. Pass Authorization: Bearer <apiToken>' });
+});
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
@@ -163,7 +183,15 @@ function sendCommand(command, params = {}, timeoutMs = 30000) {
 
 // ── REST API ────────────────────────────────────────────
 
-// 状态
+// 获取 apiToken（仅限 127.0.0.1 本机访问）
+app.get('/token', (req, res) => {
+  const ip = req.ip || req.connection.remoteAddress || '';
+  if (!ip.includes('127.0.0.1') && !ip.includes('::1')) {
+    return res.status(403).json({ error: 'Local access only' });
+  }
+  res.json({ apiToken: config.apiToken });
+});
+
 // 返回 bridge 的连接配置，供扩展首次安装时自动填入
 app.get('/config', (req, res) => {
   // 优先用环境变量 PUBLIC_IP，其次读配置文件，最后 fallback 到网卡 IP

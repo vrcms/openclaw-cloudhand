@@ -46,6 +46,27 @@ description: |
 
 ---
 
+## 鉴权
+
+所有操作端点需要 Bearer Token。获取方式（仅限本机）：
+
+```bash
+# 获取 apiToken（只能从 127.0.0.1 调用）
+APITOKEN=$(curl -s http://127.0.0.1:9876/token | python3 -c "import sys,json; print(json.load(sys.stdin)['apiToken'])")
+
+# 所有操作请求加上 header
+curl -s -H "Authorization: Bearer $APITOKEN" http://127.0.0.1:9876/tabs
+
+# 或者用 query param
+curl -s "http://127.0.0.1:9876/tabs?token=$APITOKEN"
+```
+
+token 存在 `~/.openclaw/chrome-bridge/config.json`，bridge 重启后不变。
+
+免鉴权端点：`/status`、`/config`、`/pair/challenge`、`/pair/revoke`、`/token`（仅本机）。
+
+---
+
 ## 重要：实际调用方式
 
 CloudHand 通过 HTTP bridge 运行在 `http://127.0.0.1:9876`，**没有独立工具函数**。

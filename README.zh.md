@@ -132,7 +132,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/vrcms/openclaw-cloudhand/mai
 
 > 「测试云手」
 
-AI 会自动打开 Bing，搜索 www.dabeizi.com，截图发给你，验证全链路是否正常。
+AI 会自动打开 Bing，搜索 example.com，截图发给你，验证全链路是否正常。
 
 ## 开发
 

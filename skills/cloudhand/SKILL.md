@@ -11,9 +11,19 @@ description: |
 
 ## 安装后步骤
 
-安装完成并验证 bridge 正常运行后，通过**当前对话渠道**发送一条欢迎消息给用户，例如：
+安装完成并验证 bridge 正常运行后：
 
-> ☁️ CloudHand 云手已安装！端口: 9876，状态: 已配对。直接对我说就可以操作你的 Chrome 了。
+1. **生成一次性下载链接**（60秒有效），发给用户下载 Chrome 扩展：
+   ```bash
+   APITOKEN=$(curl -s http://127.0.0.1:9876/token | python3 -c "import sys,json; print(json.load(sys.stdin)['apiToken'])")
+   curl -s -X POST -H "Authorization: Bearer $APITOKEN" http://127.0.0.1:18789/cloudhand/gen-download-link
+   # 返回: {"url":"http://<ip>:<port>/cloudhand/extension.zip?dltoken=xxx", "expiresIn":60}
+   ```
+   把返回的 url 发给用户，用户在 60 秒内下载，zip 下载后自动删除。
+
+2. **通过当前对话渠道发送欢迎消息**，例如：
+   > ☁️ CloudHand 云手已安装！Chrome 扩展下载链接（60秒有效）：<url>
+   > 安装方式：Chrome 扩展管理页 → 开发者模式 → 加载解压缩扩展 → 选择解压后的文件夹
 
 不要硬编码渠道或用户 ID，用当前会话的回复机制即可。
 

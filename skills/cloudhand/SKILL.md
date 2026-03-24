@@ -9,6 +9,33 @@ description: |
 
 # CloudHand - 控制本地 Chrome
 
+## 🚨 行为规范（必读，违反=出 bug）
+
+1. **查「用户在看什么」→ 用 `/tabs`，绝不用截图**
+   ```bash
+   curl -s http://127.0.0.1:9876/tabs | python3 /tmp/list_tabs.py
+   # list_tabs.py 内容：
+   # import sys,json; d=json.load(sys.stdin); tabs=d.get('result',[])
+   # for t in tabs: print('🟢' if t.get('active') else '⚪', t.get('id'), t.get('title','')[:40], t.get('url','')[:60])
+   ```
+
+2. **绝不操作用户自己的窗口**
+   - bridge 启动后 agentWindows 为空时，navigate 等操作会自动创建专属窗口（server.js 已内置）
+   - 每次操作前先 `curl -s http://127.0.0.1:9876/agent_windows` 确认有专属窗口
+   - 没有专属窗口 → server.js 自动在后台创建 `about:blank` 窗口，不打扰用户
+
+3. **bridge 重启后配对还在，不需要重新配对**
+   - 重启命令：`lsof -ti:9876 | xargs kill -9; cd ~/.openclaw/extensions/cloudhand && nohup node server.js > /tmp/cloudhand.log 2>&1 &`
+   - 重启后 agentWindows 清空，但 session token 持久化在 `~/.openclaw/chrome-bridge/config.json`
+
+4. **截图只在用户明确要求「截图」时才用**
+   - 读取页面内容用 `/get_text` 或 `/get_html`，更快更省
+   - 截图会发送大量 base64 数据，消耗 token
+
+5. **操作顺序**：检查连接 → 确认/创建专属窗口 → 在专属窗口 navigate → 操作
+
+---
+
 ## 重要：实际调用方式
 
 CloudHand 通过 HTTP bridge 运行在 `http://127.0.0.1:9876`，**没有独立工具函数**。

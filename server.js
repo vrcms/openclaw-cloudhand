@@ -511,28 +511,26 @@ async function handleSnapshot(req, res) {
         const cls = [...el.classList].slice(0,2).join('.');
         return el.tagName.toLowerCase() + (cls ? '.' + cls : '');
       }
-      // 扩大选择器范围，覆盖动态渲染内容（如抖音视频卡片）
-      const allEls = [...document.querySelectorAll('a,button,input,textarea,select,[role],[data-e2e],[class*="card"],h1,h2,h3,p,span,div')];
-      // 去重 + 过滤可见元素
+      // 直接用 querySelectorAll('*') 遍历所有元素
+      const all = [...document.querySelectorAll('*')];
+      const result = [];
       const seen = new Set();
-      const els = allEls.filter(el => {
+      for (const el of all) {
         const r = el.getBoundingClientRect();
-        if (r.width === 0 || r.height === 0) return false;
-        const key = el.tagName + '|' + el.className?.slice(0,50);
-        if (seen.has(key)) return false;
+        if (r.width < 5 || r.height < 5) continue;
+        const text = (el.innerText || el.textContent || '').trim();
+        if (!text && el.tagName !== 'IMG') continue;
+        const key = el.tagName + '|' + text.slice(0,30);
+        if (seen.has(key)) continue;
         seen.add(key);
-        return true;
-      }).slice(0, 150);
-      const interactive = els.map(el => {
-        const obj = { tag: el.tagName.toLowerCase(), selector: bestSelector(el) };
-        const text = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '').trim().slice(0, 60);
-        if (text) obj.text = text;
-        if (el.href) obj.href = el.href.slice(0, 100);
-        if (el.type) obj.type = el.type;
-        if (el.name) obj.name = el.name;
-        return obj;
-      });
-      return JSON.stringify({ url: location.href, title: document.title, interactive });
+        result.push({
+          tag: el.tagName.toLowerCase(),
+          text: text.slice(0, 100),
+          href: el.href?.slice(0, 120) || undefined
+        });
+        if (result.length >= 200) break;
+      }
+      return JSON.stringify({ url: location.href, title: document.title, interactive: result });
     })()`;
     const tabId = req.query.tabId ? parseInt(req.query.tabId) : (req.body && req.body.tabId ? parseInt(req.body.tabId) : undefined);
     const result = await sendCommand('eval', { expression: script, ...(tabId ? { tabId } : {}) });

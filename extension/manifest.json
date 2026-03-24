@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Chrome Bridge",
-  "version": "2.0.0",
-  "description": "连接本地Chrome和远程AI助理",
+  "name": "CloudHand Chrome Bridge",
+  "version": "2.1.0",
+  "description": "云手 - 连接本地Chrome和远程AI助理，让AI控制你的浏览器",
   "permissions": [
     "tabs",
     "activeTab",

@@ -282,9 +282,25 @@ const TOOLS = [
       const r = await bridgeCall('GET', '/page_info');
       return JSON.stringify(r);
     }
+  },
+  {
+    name: 'cloudhand_eval',
+    description: 'Execute arbitrary JavaScript in the current tab and return the result. Use this when other tools cannot find elements or when you need complex DOM operations.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        expression: { type: 'string', description: 'JavaScript expression to evaluate in the page context' },
+        tabId: { type: 'number', description: 'Tab ID (optional)' }
+      },
+      required: ['expression'],
+      additionalProperties: false
+    },
+    handler: async ({ expression, tabId } = {}) => {
+      const r = await bridgeCall('POST', '/eval', { expression, tabId });
+      return JSON.stringify(r);
+    }
   }
 ];
-
 // OpenClaw plugin register function
 function register(api) {
   const pluginDir = __dirname;
@@ -325,16 +341,7 @@ function register(api) {
       if (fs.existsSync(zipPath)) {
         res.sendFile(zipPath);
       } else {
-        res.status(404).json({ error: 'Extension zip not found. Run: openclaw cloudhand pack-extension' });
-      }
-    });
-
-    api.route('GET', '/cloudhand/status', async (req, res) => {
-      try {
-        const r = await bridgeCall('GET', '/status');
-        res.json(r);
-      } catch (e) {
-        res.json({ connected: false, error: e.message });
+        res.status(404).json({ error: 'Extension zip not found' });
       }
     });
   }

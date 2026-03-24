@@ -188,7 +188,7 @@ app.get('/page_info', route('page_info'));
 
 ['navigate','screenshot','get_html','get_text','click','type','key','scroll',
  'wait_for','get_cookies','new_tab','close_tab','focus_tab','hover','hotkey',
- 'find_elements','set_value','go_back','go_forward','select'].forEach(cmd => {
+ 'find_elements','set_value','go_back','go_forward','select','eval'].forEach(cmd => {
   app.post('/' + cmd, route(cmd));
 });
 

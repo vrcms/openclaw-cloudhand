@@ -168,6 +168,34 @@ function runScript(tabId, fn, args = []) {
   }).then(r => r[0]?.result);
 }
 
+// 用 chrome.debugger + Runtime.evaluate 执行任意 JS 字符串（绕过 CSP 限制）
+async function runDebuggerEval(tabId, expression) {
+  const debuggee = { tabId };
+  let attached = false;
+  try {
+    await chrome.debugger.attach(debuggee, '1.3');
+    attached = true;
+  } catch (e) {
+    // 可能已经 attached，忽略
+    if (!String(e).includes('already')) throw e;
+  }
+  try {
+    const result = await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    if (result.exceptionDetails) {
+      throw new Error(result.exceptionDetails.text || 'JS eval error');
+    }
+    return result.result?.value;
+  } finally {
+    if (attached) {
+      await chrome.debugger.detach(debuggee).catch(() => {});
+    }
+  }
+}
+
 async function handleCommand(command, params) {
   // 不需要 tab 的指令
   if (command === 'tabs') {
@@ -357,6 +385,13 @@ async function handleCommand(command, params) {
     case 'go_forward': {
       await chrome.tabs.goForward(tabId);
       return { ok: true };
+    }
+
+    case 'eval': {
+      // 用 chrome.debugger Runtime.evaluate 执行任意 JS（绕过 CSP 限制）
+      const expression = params.expression || params.code || '';
+      if (!expression) throw new Error('expression is required');
+      return runDebuggerEval(tabId, expression);
     }
 
     case 'find_elements': {

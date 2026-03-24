@@ -1,3 +1,6 @@
+import { CLOUDHAND_CONFIG } from './config.js';
+const DEFAULT_SERVER_URL = CLOUDHAND_CONFIG.wsUrl;
+
 async function getStorage(keys) {
   return new Promise(r => chrome.storage.local.get(keys, r));
 }
@@ -30,7 +33,7 @@ async function init() {
       // 已配对
       dot.className = 'dot ' + (connected ? 'connected' : 'disconnected');
       statusText.textContent = connected ? '已连接 ✓' : '已配对，连接中...';
-      serverUrlEl.textContent = data.serverUrl || 'ws://YOUR_VPS_IP:9876/ws';
+      serverUrlEl.textContent = data.serverUrl || DEFAULT_SERVER_URL;
       connectedView.style.display = 'block';
       pairView.style.display = 'none';
     } else {
@@ -55,7 +58,7 @@ pairBtn.addEventListener('click', async () => {
   codeInput.classList.remove('error');
 
   const data = await getStorage(['serverUrl']);
-  const serverUrl = data.serverUrl || 'ws://YOUR_VPS_IP:9876/ws';
+  const serverUrl = data.serverUrl || DEFAULT_SERVER_URL;
 
   pairBtn.disabled = true;
   pairBtn.textContent = '验证中...';

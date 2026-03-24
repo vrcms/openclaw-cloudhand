@@ -7,7 +7,9 @@ let sessionToken = null;
 let serverUrl = null;
 
 import { CLOUDHAND_CONFIG } from './config.js';
+console.log('[CloudHand] CLOUDHAND_CONFIG:', typeof CLOUDHAND_CONFIG, JSON.stringify(CLOUDHAND_CONFIG));
 const DEFAULT_SERVER = CLOUDHAND_CONFIG.wsUrl;
+console.log('[CloudHand] DEFAULT_SERVER:', DEFAULT_SERVER);
 
 // 启动时从 storage 读取配置并连接
 async function init() {

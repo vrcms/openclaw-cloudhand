@@ -1,4 +1,5 @@
-const DEFAULT_SERVER = 'ws://YOUR_VPS_IP:9876/ws';
+import { CLOUDHAND_CONFIG } from './config.js';
+const DEFAULT_SERVER = CLOUDHAND_CONFIG.wsUrl;
 
 async function getStorage(keys) {
   return new Promise(r => chrome.storage.local.get(keys, r));

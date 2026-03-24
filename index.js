@@ -382,15 +382,59 @@ function register(api) {
     });
   }
 
+  // 一次性下载 token 存储 { token -> expiresAt }
+  const dlTokens = new Map();
+
   // Register extension download route
   if (api.route) {
-    api.route('GET', '/cloudhand/extension.zip', (req, res) => {
-      const zipPath = path.join(pluginDir, 'extension.zip');
-      if (fs.existsSync(zipPath)) {
-        res.sendFile(zipPath);
-      } else {
-        res.status(404).json({ error: 'Extension zip not found' });
+    // 生成下载链接（需要 apiToken 鉴权，返回 60 秒有效的一次性下载链接）
+    api.route('POST', '/cloudhand/gen-download-link', async (req, res) => {
+      // 读取 bridge apiToken 鉴权
+      const bridgeConfig = JSON.parse(fs.readFileSync(path.join(require('os').homedir(), '.openclaw', 'chrome-bridge', 'config.json'), 'utf8'));
+      const auth = req.headers['authorization'] || '';
+      const token = auth.startsWith('Bearer ') ? auth.slice(7) : (req.query.token || '');
+      if (!token || token !== bridgeConfig.apiToken) {
+        return res.status(401).json({ error: 'Unauthorized' });
       }
+      const zipPath = path.join(pluginDir, 'extension.zip');
+      if (!fs.existsSync(zipPath)) {
+        return res.status(404).json({ error: 'Extension zip not found. Restart gateway to rebuild.' });
+      }
+      // 生成一次性 token，60秒有效
+      const dlToken = require('crypto').randomBytes(24).toString('hex');
+      dlTokens.set(dlToken, Date.now() + 60000);
+      // 60秒后自动清除
+      setTimeout(() => dlTokens.delete(dlToken), 60000);
+      // 读取公网 IP
+      let publicIp = '127.0.0.1';
+      try {
+        const bcfg = JSON.parse(fs.readFileSync(path.join(require('os').homedir(), '.openclaw', 'chrome-bridge', 'config.json'), 'utf8'));
+        publicIp = bcfg.publicIp || publicIp;
+      } catch(e) {}
+      const port = bridgeConfig.port || 18789;
+      const url = `http://${publicIp}:${port}/cloudhand/extension.zip?dltoken=${dlToken}`;
+      res.json({ url, expiresIn: 60, message: '链接60秒后失效，下载后zip自动删除' });
+    });
+
+    // 下载端点：需要有效的一次性 dltoken
+    api.route('GET', '/cloudhand/extension.zip', (req, res) => {
+      const dlToken = req.query.dltoken || '';
+      const expiresAt = dlTokens.get(dlToken);
+      if (!dlToken || !expiresAt || Date.now() > expiresAt) {
+        return res.status(401).json({ error: 'Invalid or expired download token. Request a new link.' });
+      }
+      dlTokens.delete(dlToken); // 一次性，立即删除
+      const zipPath = path.join(pluginDir, 'extension.zip');
+      if (!fs.existsSync(zipPath)) {
+        return res.status(404).json({ error: 'Extension zip not found.' });
+      }
+      res.download(zipPath, 'cloudhand-extension.zip', (err) => {
+        if (!err) {
+          // 下载完成后删除 zip
+          try { fs.unlinkSync(zipPath); } catch(e) {}
+          console.log('[cloudhand] Extension zip downloaded and deleted.');
+        }
+      });
     });
   }
 

@@ -1,0 +1,10 @@
+{
+  "name": "openclaw-cloudhand",
+  "version": "1.0.0",
+  "description": "CloudHand - Control local Chrome from remote OpenClaw",
+  "main": "index.js",
+  "dependencies": {
+    "express": "^4.18.0",
+    "ws": "^8.14.0"
+  }
+}

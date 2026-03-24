@@ -1,0 +1,31 @@
+{
+  "id": "cloudhand",
+  "name": "CloudHand",
+  "description": "Control your local Chrome browser from remote OpenClaw. Bridges AI to your real browser via WebSocket.",
+  "version": "1.0.0",
+  "skills": ["./skills"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "port": {
+        "type": "number",
+        "description": "WebSocket server port (default: 9876)"
+      },
+      "autoStart": {
+        "type": "boolean",
+        "description": "Auto-start the bridge server when Gateway starts (default: true)"
+      }
+    }
+  },
+  "uiHints": {
+    "port": {
+      "label": "Bridge Server Port",
+      "help": "Port for the CloudHand WebSocket bridge server. Default: 9876."
+    },
+    "autoStart": {
+      "label": "Auto Start",
+      "help": "Automatically start the bridge server when OpenClaw Gateway starts."
+    }
+  }
+}

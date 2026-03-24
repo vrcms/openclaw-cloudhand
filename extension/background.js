@@ -419,3 +419,19 @@ async function handleCommand(command, params) {
       throw new Error('Unknown command: ' + command);
   }
 }
+
+// ── Agent 窗口关闭感知 ──────────────────────────────────
+// 当用户手动关闭窗口时，主动通知 server 从 agentWindows 里清掉
+chrome.windows.onRemoved.addListener((windowId) => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'window_removed', windowId }));
+    console.log('[CloudHand] Window removed, notified server:', windowId);
+  }
+});
+
+// 当用户手动关闭 tab 时，也通知 server
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'tab_removed', tabId, windowId: removeInfo.windowId, isWindowClosing: removeInfo.isWindowClosing }));
+  }
+});

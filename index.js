@@ -330,6 +330,41 @@ function register(api) {
     }
   }
 
+  // 自动生成带正确 VPS IP 的 extension.zip
+  try {
+    const bridgeConfigPath = path.join(require('os').homedir(), '.openclaw', 'chrome-bridge', 'config.json');
+    let publicIp = process.env.PUBLIC_IP || null;
+    if (!publicIp && fs.existsSync(bridgeConfigPath)) {
+      const bridgeCfg = JSON.parse(fs.readFileSync(bridgeConfigPath, 'utf8'));
+      publicIp = bridgeCfg.publicIp || null;
+    }
+    if (publicIp) {
+      const extDir = path.join(pluginDir, 'extension');
+      const zipPath = path.join(pluginDir, 'extension.zip');
+      // 读取 background.js，替换 DEFAULT_SERVER
+      const bgPath = path.join(extDir, 'background.js');
+      let bgContent = fs.readFileSync(bgPath, 'utf8');
+      const patched = bgContent.replace(
+        /const DEFAULT_SERVER = 'ws:\/\/[^']+';/,
+        `const DEFAULT_SERVER = 'ws://${publicIp}:${config.port || 9876}/ws';`
+      );
+      // 写入临时目录打包
+      const tmpDir = path.join(require('os').tmpdir(), 'cloudhand-ext-build');
+      if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+      // 复制所有扩展文件到临时目录
+      for (const f of fs.readdirSync(extDir)) {
+        fs.copyFileSync(path.join(extDir, f), path.join(tmpDir, f));
+      }
+      // 写入 patched background.js
+      fs.writeFileSync(path.join(tmpDir, 'background.js'), patched);
+      // 打包 zip
+      execSync(`cd '${tmpDir}' && zip -r '${zipPath}' .`, { stdio: 'ignore' });
+      console.log(`[cloudhand] Extension zip built with IP: ${publicIp}`);
+    }
+  } catch (e) {
+    console.error('[cloudhand] Failed to build extension zip:', e.message);
+  }
+
   // Register tools
   for (const tool of TOOLS) {
     api.registerTool({

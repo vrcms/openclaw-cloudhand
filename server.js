@@ -498,7 +498,10 @@ app.get('/tabs', async (req, res) => {
 app.get('/page_info', route('page_info'));
 
 // 页面快照：返回紧凑 JSON（url/title/interactive元素列表），供 AI 直接读取操作
-app.get('/snapshot', async (req, res) => {
+// 支持 GET /snapshot?tabId=xxx 或 POST /snapshot {tabId:xxx}
+app.post('/snapshot', handleSnapshot);
+app.get('/snapshot', handleSnapshot);
+async function handleSnapshot(req, res) {
   try {
     const script = `(function() {
       function bestSelector(el) {
@@ -523,11 +526,12 @@ app.get('/snapshot', async (req, res) => {
       });
       return JSON.stringify({ url: location.href, title: document.title, interactive });
     })()`;
-    const result = await sendCommand('eval', { expression: script });
+    const tabId = req.query.tabId ? parseInt(req.query.tabId) : (req.body && req.body.tabId ? parseInt(req.body.tabId) : undefined);
+    const result = await sendCommand('eval', { expression: script, ...(tabId ? { tabId } : {}) });
     const data = typeof result === 'string' ? JSON.parse(result) : result;
     res.json({ ok: true, result: data });
   } catch (e) { res.status(500).json({ error: e.message }); }
-});
+}
 
 ['navigate','screenshot','get_html','get_text','click','type','key','scroll',
  'wait_for','get_cookies','new_tab','new_window','close_tab','focus_tab','hover','hotkey',

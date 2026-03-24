@@ -231,16 +231,76 @@ const agentWindows = new Set(); // 记录 agent 开的所有 windowId
 let currentAgentTabId = null; // 当前 agent 操作的 tab
 
 // ── 浏览器操作 API ──────────────────────────────────────
+// 注入 Agent 操作提示条（显示在页面右上角）
+const INDICATOR_CMDS = ['navigate','click','type','key','scroll','set_value','go_back','go_forward','select','eval','hover'];
+
+async function showAgentIndicator(tabId, action) {
+  const label = {
+    navigate: '🤖 导航中...', click: '🤖 点击中...', type: '🤖 输入中...',
+    key: '🤖 按键中...', scroll: '🤖 滚动中...', set_value: '🤖 填值中...',
+    go_back: '🤖 后退...', go_forward: '🤖 前进...', select: '🤖 选择中...',
+    eval: '🤖 执行JS...', hover: '🤖 悬停中...'
+  }[action] || '🤖 AI操作中...';
+  const js = `
+    (function(){
+      var id='__agent_indicator__';
+      var el=document.getElementById(id);
+      if(!el){el=document.createElement('div');el.id=id;
+        el.style.cssText='position:fixed;top:12px;right:12px;z-index:2147483647;background:rgba(30,30,30,0.92);color:#fff;padding:8px 16px;border-radius:8px;font-size:14px;font-family:sans-serif;box-shadow:0 2px 12px rgba(0,0,0,0.4);pointer-events:none;transition:opacity 0.3s;';
+        document.body.appendChild(el);}
+      el.textContent='${label}';
+      el.style.opacity='1';
+      clearTimeout(el._hideTimer);
+    })();
+  `;
+  try { await sendCommand('eval', { tabId, script: js }); } catch(e) {}
+}
+
+async function hideAgentIndicator(tabId) {
+  const js = `
+    (function(){
+      var el=document.getElementById('__agent_indicator__');
+      if(el){el.style.opacity='0';el._hideTimer=setTimeout(function(){el.remove();},400);}
+    })();
+  `;
+  try { await sendCommand('eval', { tabId, script: js }); } catch(e) {}
+}
+
 const route = (cmd, extract) => async (req, res) => {
   const params = req.method === 'GET' ? req.query : req.body || {};
   try {
     // 对需要 tab 的操作，自动注入 currentAgentTabId（如果没有指定 tabId）
     const TAB_CMDS = ['navigate','screenshot','get_html','get_text','click','type','key','scroll',
       'wait_for','hover','find_elements','set_value','go_back','go_forward','select','eval','page_info'];
+    // 如果没有专属窗口且是 tab 操作，自动创建专属窗口，绝不操作用户自己的窗口
+    if (TAB_CMDS.includes(cmd) && !params.tabId && !currentAgentTabId) {
+      console.log('[Agent] No agent window, auto-creating one...');
+      try {
+        const winResult = await sendCommand('new_window', { url: 'about:blank', focused: false });
+        if (winResult && winResult.windowId) {
+          agentWindows.add(winResult.windowId);
+          currentAgentTabId = winResult.tabId || null;
+          console.log(`[Agent] Auto-created window ${winResult.windowId}, tab ${currentAgentTabId}`);
+        }
+      } catch(e) { console.log('[Agent] Failed to auto-create window:', e.message); }
+    }
     if (TAB_CMDS.includes(cmd) && !params.tabId && currentAgentTabId) {
       params.tabId = currentAgentTabId;
     }
+    // 操作前显示提示条
+    const indicatorTabId = params.tabId || currentAgentTabId;
+    if (INDICATOR_CMDS.includes(cmd) && indicatorTabId) {
+      await showAgentIndicator(indicatorTabId, cmd);
+    }
     const result = await sendCommand(cmd, params);
+    // 操作完成后隐藏提示条（navigate 稍等页面加载后再隐藏）
+    if (INDICATOR_CMDS.includes(cmd) && indicatorTabId) {
+      if (cmd === 'navigate') {
+        setTimeout(() => hideAgentIndicator(indicatorTabId), 1500);
+      } else {
+        await hideAgentIndicator(indicatorTabId);
+      }
+    }
     // 自动记录 agent 开的窗口和 tab
     if (cmd === 'new_window' && result && result.windowId) {
       agentWindows.add(result.windowId);
@@ -326,4 +386,12 @@ server.listen(PORT, HOST, () => {
   console.log(`WebSocket endpoint: ws://${HOST}:${PORT}/ws`);
   console.log(`Config: ${CONFIG_FILE}`);
   console.log(`Paired: ${!!config.sessionToken}`);
+
+  // 启动后发飞书通知
+  const { execFile } = require('child_process');
+  const notifyScript = require('path').join(__dirname, 'notify-start.sh');
+  execFile('bash', [notifyScript], { timeout: 30000 }, (err, stdout, stderr) => {
+    if (err) console.log('[cloudhand] notify error:', err.message);
+    else console.log('[cloudhand] notify sent');
+  });
 });

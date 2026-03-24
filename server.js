@@ -376,7 +376,7 @@ async function showAgentIndicator(tabId, action) {
       clearTimeout(el._hideTimer);
     })();
   `;
-  try { await sendCommand('eval', { tabId, script: js }); } catch(e) {}
+  try { await sendCommand('eval', { tabId, expression: js }); } catch(e) {}
 }
 
 async function hideAgentIndicator(tabId) {
@@ -386,7 +386,7 @@ async function hideAgentIndicator(tabId) {
       if(el){el.style.opacity='0';el._hideTimer=setTimeout(function(){el.remove();},400);}
     })();
   `;
-  try { await sendCommand('eval', { tabId, script: js }); } catch(e) {}
+  try { await sendCommand('eval', { tabId, expression: js }); } catch(e) {}
 }
 
 const route = (cmd, extract) => async (req, res) => {
@@ -496,6 +496,38 @@ app.get('/tabs', async (req, res) => {
 });
 
 app.get('/page_info', route('page_info'));
+
+// 页面快照：返回紧凑 JSON（url/title/interactive元素列表），供 AI 直接读取操作
+app.get('/snapshot', async (req, res) => {
+  try {
+    const script = `(function() {
+      function bestSelector(el) {
+        if (el.id) return '#' + el.id;
+        if (el.name) return el.tagName.toLowerCase() + '[name="' + el.name + '"]';
+        if (el.getAttribute('data-testid')) return '[data-testid="' + el.getAttribute('data-testid') + '"]';
+        const cls = [...el.classList].slice(0,2).join('.');
+        return el.tagName.toLowerCase() + (cls ? '.' + cls : '');
+      }
+      const els = [...document.querySelectorAll('a,button,input,textarea,select,[role=button],[role=link],[role=tab],[role=menuitem]')];
+      const interactive = els.filter(el => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      }).slice(0, 80).map(el => {
+        const obj = { tag: el.tagName.toLowerCase(), selector: bestSelector(el) };
+        const text = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '').trim().slice(0, 60);
+        if (text) obj.text = text;
+        if (el.href) obj.href = el.href.slice(0, 100);
+        if (el.type) obj.type = el.type;
+        if (el.name) obj.name = el.name;
+        return obj;
+      });
+      return JSON.stringify({ url: location.href, title: document.title, interactive });
+    })()`;
+    const result = await sendCommand('eval', { expression: script });
+    const data = typeof result === 'string' ? JSON.parse(result) : result;
+    res.json({ ok: true, result: data });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 ['navigate','screenshot','get_html','get_text','click','type','key','scroll',
  'wait_for','get_cookies','new_tab','new_window','close_tab','focus_tab','hover','hotkey',

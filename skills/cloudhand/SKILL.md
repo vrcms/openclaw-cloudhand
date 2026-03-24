@@ -48,10 +48,10 @@ description: |
    - 重启命令：`lsof -ti:9876 | xargs kill -9; cd ~/.openclaw/extensions/cloudhand && nohup node server.js > /tmp/cloudhand.log 2>&1 &`
    - 重启后 agentWindows 清空，但 session token 持久化在 `~/.openclaw/chrome-bridge/config.json`
 
-4. **页面结构用 `/snapshot`，截图只在用户明确要求时才用**
-   - `/snapshot` 返回紧凑 JSON（url/title/所有可交互元素+selector），AI 可直接用 selector 操作
-   - `/get_text` 获取纯文本，`/get_html` 获取完整 HTML
-   - 截图会发送大量 base64 数据，消耗 token，非必要不用
+4. **禁止主动截图！除非用户明确说"截图"**
+   - 优先用 `/snapshot` 获取页面结构（紧凑 JSON，含 selector）
+   - 用 `/get_text` 获取纯文本，用 `/get_html` 获取完整 HTML
+   - 截图消耗大量 token，只有在用户明确说"截图""截个图看看"时才用
 
 5. **操作顺序**：检查连接 → 确认/创建专属窗口 → 在专属窗口 navigate → 操作
 

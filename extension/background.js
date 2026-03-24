@@ -372,6 +372,13 @@ async function handleCommand(command, params) {
       return { cookies: cookies.map(c => ({ name: c.name, value: c.value, domain: c.domain })) };
     }
 
+    case 'new_window': {
+      const url = params.url || 'about:blank';
+      const win = await chrome.windows.create({ url, focused: true, type: 'normal' });
+      const newTab = win.tabs?.[0];
+      return { windowId: win.id, tabId: newTab?.id, url: newTab?.url };
+    }
+
     case 'close_tab': {
       await chrome.tabs.remove(tabId);
       return true;

@@ -262,8 +262,22 @@ const TOOLS = [
     }
   },
   {
+    name: 'cloudhand_new_window',
+    description: 'Open a new Chrome window (not a tab). Use this BEFORE any browser operation to avoid interfering with the user\'s existing tabs. Returns the new windowId and tabId.',
+    inputSchema: {
+      type: 'object',
+      properties: { url: { type: 'string', description: 'URL to open in the new window (optional, defaults to about:blank)' } },
+      additionalProperties: false
+    },
+    handler: async ({ url } = {}) => {
+      const r = await bridgeCall('POST', '/new_window', { url });
+      return JSON.stringify(r);
+    }
+  },
+  {
     name: 'cloudhand_new_tab',
     description: 'Open a new tab, optionally with a URL.',
+
     inputSchema: {
       type: 'object',
       properties: { url: { type: 'string' } },

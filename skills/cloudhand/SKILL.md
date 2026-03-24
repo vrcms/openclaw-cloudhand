@@ -13,7 +13,8 @@ description: |
 
 1. **先检查连接状态**：调用 `cloudhand_status` 确认浏览器已连接
 2. **未连接时配对**：调用 `cloudhand_pair` 获取验证码，通过当前渠道发给用户（不要硬编码飞书）
-3. **截图处理**：`cloudhand_screenshot` 返回 `{ path, base64, sizeKB }`，根据当前渠道决定如何发送
+3. **开新窗口**：每次操作浏览器前，先调用 `cloudhand_new_window` 开一个新 Chrome 窗口，避免干扰用户现有页面
+4. **截图处理**：`cloudhand_screenshot` 返回 `{ path, base64, sizeKB }`，根据当前渠道决定如何发送
 
 ## 标准操作流程
 
@@ -88,15 +89,16 @@ description: |
 
 ```
 1. cloudhand_status（确认连接）
-2. cloudhand_navigate(url="https://www.bing.com")
-3. 等待 2 秒（页面加载）
-4. cloudhand_click(selector="#sb_form_q")  ← bing 搜索框
-5. cloudhand_type(text="www.dabeizi.com")
-6. cloudhand_key(key="Enter")
-7. 等待 2 秒（搜索结果加载）
-8. cloudhand_screenshot → 截图
-9. 通过当前渠道发送截图给用户
-10. 报告：「已在 Bing 搜索 www.dabeizi.com，截图如上」
+2. cloudhand_new_window（开新窗口，不干扰现有页面）
+3. cloudhand_navigate(url="https://www.bing.com")
+4. 等待 2 秒（页面加载）
+5. cloudhand_click(selector="#sb_form_q")  ← bing 搜索框
+6. cloudhand_type(text="www.dabeizi.com")
+7. cloudhand_key(key="Enter")
+8. 等待 2 秒（搜索结果加载）
+9. cloudhand_screenshot → 截图
+10. 通过当前渠道发送截图给用户
+11. 报告：「已在 Bing 搜索 www.dabeizi.com，截图如上」
 ```
 
 ## 常见问题

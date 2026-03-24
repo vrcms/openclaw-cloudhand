@@ -36,6 +36,19 @@ let pendingChallenge = null; // { code, expiresAt }
 const app = express();
 app.use(express.json());
 
+// CORS：只允许 Chrome 扩展和本地访问
+app.use((req, res, next) => {
+  const origin = req.headers.origin || '';
+  const allowed = origin.startsWith('chrome-extension://') || origin === '' || origin.includes('127.0.0.1') || origin.includes('localhost');
+  if (allowed) {
+    if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 // 免鉴权端点白名单
 const PUBLIC_PATHS = new Set(['/status', '/config', '/pair/challenge', '/pair/revoke', '/token']);
 
@@ -233,16 +246,36 @@ app.get('/status', (req, res) => {
 
 // ── 配对 API（供 OpenClaw 调用）──────────────────────────
 
+// challenge 速率限制（每个 IP 每分钟最多 5 次）
+const challengeRateLimit = new Map(); // ip -> { count, resetAt }
+function checkChallengeRate(ip) {
+  const now = Date.now();
+  const entry = challengeRateLimit.get(ip) || { count: 0, resetAt: now + 60000 };
+  if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + 60000; }
+  entry.count++;
+  challengeRateLimit.set(ip, entry);
+  return entry.count <= 5;
+}
+
 // 生成 challenge（OpenClaw 调用，返回6位码）
 app.post('/pair/challenge', (req, res) => {
+  const ip = req.ip || req.connection.remoteAddress || 'unknown';
+  if (!checkChallengeRate(ip)) {
+    return res.status(429).json({ error: 'Too many requests. Max 5 per minute.' });
+  }
   const code = String(Math.floor(100000 + Math.random() * 900000));
   pendingChallenge = { code, expiresAt: Date.now() + 30000 };
   console.log(`[Pair] Challenge generated: ${code}`);
   res.json({ code, expiresAt: pendingChallenge.expiresAt });
 });
 
-// 吊销 session（断开连接）
+// 吊销 session（断开连接，需要 Bearer Token）
 app.post('/pair/revoke', (req, res) => {
+  const auth = req.headers['authorization'] || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : (req.query.token || '');
+  if (!token || token !== config.apiToken) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   config.sessionToken = null;
   config.sessionCreatedAt = null;
   saveConfig(config);

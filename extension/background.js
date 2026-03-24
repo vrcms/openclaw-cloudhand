@@ -207,8 +207,11 @@ async function handleCommand(command, params) {
   }
   if (command === 'new_tab') {
     // active: false 让新 tab 在后台打开，不抢焦点
-    const tab = await chrome.tabs.create({ url: params.url || 'about:blank', active: false, windowId: params.windowId });
-    return { tabId: tab.id, url: tab.url };
+    // windowId 必须是整数
+    const windowId = params.windowId ? parseInt(params.windowId, 10) : undefined;
+    console.log('[CloudHand] new_tab windowId:', windowId, typeof windowId);
+    const tab = await chrome.tabs.create({ url: params.url || 'about:blank', active: false, windowId });
+    return { tabId: tab.id, windowId: tab.windowId, url: tab.url };
   }
   if (command === 'focus_tab') {
     await chrome.tabs.update(params.tabId, { active: true });

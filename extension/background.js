@@ -6,7 +6,8 @@ let connected = false;
 let sessionToken = null;
 let serverUrl = null;
 
-const DEFAULT_SERVER = 'ws://YOUR_VPS_IP:9876/ws';
+import { CLOUDHAND_CONFIG } from './config.js';
+const DEFAULT_SERVER = CLOUDHAND_CONFIG.wsUrl;
 
 // 启动时从 storage 读取配置并连接
 async function init() {

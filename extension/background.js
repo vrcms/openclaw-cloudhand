@@ -203,7 +203,8 @@ async function handleCommand(command, params) {
     return tabs.map(t => ({ id: t.id, url: t.url, title: t.title, active: t.active, windowId: t.windowId }));
   }
   if (command === 'new_tab') {
-    const tab = await chrome.tabs.create({ url: params.url || 'about:blank', active: true });
+    // active: false 让新 tab 在后台打开，不抢焦点
+    const tab = await chrome.tabs.create({ url: params.url || 'about:blank', active: false, windowId: params.windowId });
     return { tabId: tab.id, url: tab.url };
   }
   if (command === 'focus_tab') {
@@ -217,7 +218,8 @@ async function handleCommand(command, params) {
 
   switch (command) {
     case 'navigate': {
-      await chrome.tabs.update(tabId, { url: params.url, active: true });
+      // active: false 导航时不抢焦点，后台静默加载
+      await chrome.tabs.update(tabId, { url: params.url, active: false });
       await new Promise((resolve) => {
         const listener = (id, info) => {
           if (id === tabId && info.status === 'complete') {
@@ -374,7 +376,8 @@ async function handleCommand(command, params) {
 
     case 'new_window': {
       const url = params.url || 'about:blank';
-      const win = await chrome.windows.create({ url, focused: true, type: 'normal' });
+      // focused: false 让新窗口在后台打开，不抢焦点
+      const win = await chrome.windows.create({ url, focused: false, type: 'normal' });
       const newTab = win.tabs?.[0];
       return { windowId: win.id, tabId: newTab?.id, url: newTab?.url };
     }

@@ -50,7 +50,7 @@ app.use((req, res, next) => {
 });
 
 // 免鉴权端点白名单
-const PUBLIC_PATHS = new Set(['/status', '/config', '/pair/challenge', '/pair/revoke', '/token']);
+const PUBLIC_PATHS = new Set(['/status', '/config', '/pair/challenge', '/pair/revoke', '/token', '/download-ext']);
 
 // Bearer Token 鉴权中间件
 app.use((req, res, next) => {
@@ -203,8 +203,26 @@ const dlTokens = new Map();
 app.post('/gen-download-link', (req, res) => {
   const pluginDir = path.join(process.env.HOME || '/root', '.openclaw/extensions/cloudhand');
   const zipPath = path.join(pluginDir, 'extension.zip');
+  // zip 不存在时自动重新打包
   if (!fs.existsSync(zipPath)) {
-    return res.status(404).json({ error: 'Extension zip not found. Restart gateway to rebuild.' });
+    try {
+      const extDir = path.join(pluginDir, 'extension');
+      const os = require('os');
+      const tmpDir = path.join(os.tmpdir(), 'cloudhand-ext-build');
+      if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.mkdirSync(tmpDir, { recursive: true });
+      for (const f of fs.readdirSync(extDir)) {
+        fs.copyFileSync(path.join(extDir, f), path.join(tmpDir, f));
+      }
+      let publicIp2 = '127.0.0.1';
+      try { publicIp2 = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')).publicIp || publicIp2; } catch(e) {}
+      const configJs = `// Auto-generated\nexport const CLOUDHAND_CONFIG = { wsUrl: 'ws://${publicIp2}:${PORT}/ws', port: ${PORT} };\n`;
+      fs.writeFileSync(path.join(tmpDir, 'config.js'), configJs);
+      require('child_process').execSync(`cd '${tmpDir}' && zip -r '${zipPath}' .`, { stdio: 'ignore' });
+      console.log('[cloudhand] Extension zip rebuilt for download');
+    } catch(e) {
+      return res.status(500).json({ error: 'Failed to build extension zip: ' + e.message });
+    }
   }
   const dlToken = crypto.randomBytes(24).toString('hex');
   dlTokens.set(dlToken, Date.now() + 60000);

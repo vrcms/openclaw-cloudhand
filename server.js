@@ -228,16 +228,28 @@ app.post('/pair/revoke', (req, res) => {
 
 // ── Agent 管理的窗口列表 ──────────────────────────────────
 const agentWindows = new Set(); // 记录 agent 开的所有 windowId
+let currentAgentTabId = null; // 当前 agent 操作的 tab
 
 // ── 浏览器操作 API ──────────────────────────────────────
 const route = (cmd, extract) => async (req, res) => {
   const params = req.method === 'GET' ? req.query : req.body || {};
   try {
+    // 对需要 tab 的操作，自动注入 currentAgentTabId（如果没有指定 tabId）
+    const TAB_CMDS = ['navigate','screenshot','get_html','get_text','click','type','key','scroll',
+      'wait_for','hover','find_elements','set_value','go_back','go_forward','select','eval','page_info'];
+    if (TAB_CMDS.includes(cmd) && !params.tabId && currentAgentTabId) {
+      params.tabId = currentAgentTabId;
+    }
     const result = await sendCommand(cmd, params);
-    // 自动记录 agent 开的窗口
+    // 自动记录 agent 开的窗口和 tab
     if (cmd === 'new_window' && result && result.windowId) {
       agentWindows.add(result.windowId);
-      console.log(`[Agent] Tracking window ${result.windowId}, total: ${agentWindows.size}`);
+      currentAgentTabId = result.tabId || null;
+      console.log(`[Agent] Tracking window ${result.windowId}, tab ${currentAgentTabId}`);
+    }
+    if (cmd === 'new_tab' && result && result.tabId) {
+      currentAgentTabId = result.tabId;
+      console.log(`[Agent] Current agent tab: ${currentAgentTabId}`);
     }
     res.json({ ok: true, result });
   }

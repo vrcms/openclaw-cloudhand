@@ -67,7 +67,7 @@ This will:
 
 3. Configure the extension:
    - Click the CloudHand icon
-   - Enter your VPS address (e.g. `149.13.91.10:9876`)
+   - Enter your VPS address (e.g. `YOUR_VPS_IP:9876`)
    - Click **Connect**
 
 4. Pair with the AI:

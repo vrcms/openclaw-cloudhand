@@ -30,7 +30,7 @@ async function init() {
       // 已配对
       dot.className = 'dot ' + (connected ? 'connected' : 'disconnected');
       statusText.textContent = connected ? '已连接 ✓' : '已配对，连接中...';
-      serverUrlEl.textContent = data.serverUrl || 'ws://149.13.91.10/chrome-bridge';
+      serverUrlEl.textContent = data.serverUrl || 'ws://YOUR_VPS_IP:9876/ws';
       connectedView.style.display = 'block';
       pairView.style.display = 'none';
     } else {
@@ -55,7 +55,7 @@ pairBtn.addEventListener('click', async () => {
   codeInput.classList.remove('error');
 
   const data = await getStorage(['serverUrl']);
-  const serverUrl = data.serverUrl || 'ws://149.13.91.10/chrome-bridge';
+  const serverUrl = data.serverUrl || 'ws://YOUR_VPS_IP:9876/ws';
 
   pairBtn.disabled = true;
   pairBtn.textContent = '验证中...';

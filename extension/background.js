@@ -6,7 +6,7 @@ let connected = false;
 let sessionToken = null;
 let serverUrl = null;
 
-const DEFAULT_SERVER = 'ws://149.13.91.10/chrome-bridge';
+const DEFAULT_SERVER = 'ws://YOUR_VPS_IP:9876/ws';
 
 // 启动时从 storage 读取配置并连接
 async function init() {

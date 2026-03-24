@@ -71,7 +71,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/vrcms/openclaw-cloudhand/mai
 
 3. 配置扩展：
    - 点击 CloudHand 扩展图标
-   - 填入 VPS 地址（例如 `149.13.91.10:9876`）
+   - 填入 VPS 地址（例如 `YOUR_VPS_IP:9876`）
    - 点击**连接**
 
 4. 与 AI 配对：

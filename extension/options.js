@@ -1,4 +1,4 @@
-const DEFAULT_SERVER = 'ws://149.13.91.10/chrome-bridge';
+const DEFAULT_SERVER = 'ws://YOUR_VPS_IP:9876/ws';
 
 async function getStorage(keys) {
   return new Promise(r => chrome.storage.local.get(keys, r));

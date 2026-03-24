@@ -51,8 +51,9 @@ description: |
    - 重启后 agentWindows 清空，但 session token 持久化在 `~/.openclaw/chrome-bridge/config.json`
 
 4. **禁止主动截图！除非用户明确说"截图"**
-   - 优先用 `/snapshot` 获取页面结构（紧凑 JSON，含 selector）
+   - 优先用 `/eval` 直接执行 JS 提取内容（最灵活，覆盖所有 DOM）
    - 用 `/get_text` 获取纯文本，用 `/get_html` 获取完整 HTML
+   - `/snapshot` 端点不稳定，不推荐用
    - 截图消耗大量 token，只有在用户明确说"截图""截个图看看"时才用
 
 5. **操作顺序**：检查连接 → 确认/创建专属窗口 → 在专属窗口 navigate → 操作

@@ -511,11 +511,19 @@ async function handleSnapshot(req, res) {
         const cls = [...el.classList].slice(0,2).join('.');
         return el.tagName.toLowerCase() + (cls ? '.' + cls : '');
       }
-      const els = [...document.querySelectorAll('a,button,input,textarea,select,[role=button],[role=link],[role=tab],[role=menuitem]')];
-      const interactive = els.filter(el => {
+      // 扩大选择器范围，覆盖动态渲染内容（如抖音视频卡片）
+      const allEls = [...document.querySelectorAll('a,button,input,textarea,select,[role],[data-e2e],[class*="card"],h1,h2,h3,p,span,div')];
+      // 去重 + 过滤可见元素
+      const seen = new Set();
+      const els = allEls.filter(el => {
         const r = el.getBoundingClientRect();
-        return r.width > 0 && r.height > 0;
-      }).slice(0, 80).map(el => {
+        if (r.width === 0 || r.height === 0) return false;
+        const key = el.tagName + '|' + el.className?.slice(0,50);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).slice(0, 150);
+      const interactive = els.map(el => {
         const obj = { tag: el.tagName.toLowerCase(), selector: bestSelector(el) };
         const text = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '').trim().slice(0, 60);
         if (text) obj.text = text;

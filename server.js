@@ -251,6 +251,12 @@ const route = (cmd, extract) => async (req, res) => {
       currentAgentTabId = result.tabId;
       console.log(`[Agent] Current agent tab: ${currentAgentTabId}`);
     }
+    // navigate 完成后自动将 agent tab 置于专属窗口的前台（不影响东哥的窗口焦点）
+    if (cmd === 'navigate' && currentAgentTabId) {
+      try {
+        await sendCommand('focus_tab', { tabId: currentAgentTabId });
+      } catch(e) { /* ignore */ }
+    }
     res.json({ ok: true, result });
   }
   catch (e) { res.status(500).json({ error: e.message }); }

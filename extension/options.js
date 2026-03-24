@@ -12,7 +12,25 @@ async function removeStorage(keys) {
 
 async function init() {
   const data = await getStorage(['serverUrl', 'sessionToken', 'sessionCreatedAt']);
-  const serverUrl = data.serverUrl || DEFAULT_SERVER;
+  let serverUrl = data.serverUrl || DEFAULT_SERVER;
+
+  // 如果还是占位符，尝试从常见本地端口自动获取 bridge 配置
+  if (serverUrl.includes('YOUR_VPS_IP') || serverUrl.includes('localhost') || serverUrl.includes('127.0.0.1')) {
+    try {
+      const res = await fetch('http://127.0.0.1:9876/config');
+      if (res.ok) {
+        const cfg = await res.json();
+        if (cfg.wsUrl && !cfg.wsUrl.includes('YOUR_VPS_IP')) {
+          serverUrl = cfg.wsUrl;
+          await setStorage({ serverUrl });
+          console.log('[CloudHand] Auto-detected server URL:', serverUrl);
+        }
+      }
+    } catch (e) {
+      // bridge 不在本地，保留占位符让用户手动填
+    }
+  }
+
   document.getElementById('serverUrl').value = serverUrl;
 
   if (data.sessionToken) {

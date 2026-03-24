@@ -164,6 +164,36 @@ function sendCommand(command, params = {}, timeoutMs = 30000) {
 // ── REST API ────────────────────────────────────────────
 
 // 状态
+// 返回 bridge 的连接配置，供扩展首次安装时自动填入
+app.get('/config', (req, res) => {
+  // 优先用环境变量 PUBLIC_IP，其次读配置文件，最后 fallback 到网卡 IP
+  const os = require('os');
+  const fs2 = require('fs');
+  let publicIp = process.env.PUBLIC_IP || null;
+  if (!publicIp) {
+    try {
+      const cfg = JSON.parse(fs2.readFileSync(CONFIG_FILE, 'utf8'));
+      publicIp = cfg.publicIp || null;
+    } catch {}
+  }
+  if (!publicIp) {
+    const interfaces = os.networkInterfaces();
+    for (const iface of Object.values(interfaces)) {
+      for (const addr of iface) {
+        if (addr.family === 'IPv4' && !addr.internal) {
+          publicIp = addr.address;
+          break;
+        }
+      }
+      if (publicIp) break;
+    }
+  }
+  res.json({
+    wsUrl: `ws://${publicIp}:${PORT}/ws`,
+    port: PORT
+  });
+});
+
 app.get('/status', (req, res) => {
   res.json({
     connected: extensionSocket?.readyState === extensionSocket?.OPEN,

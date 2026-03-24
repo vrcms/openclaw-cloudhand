@@ -196,6 +196,50 @@ function sendCommand(command, params = {}, timeoutMs = 30000) {
 
 // ── REST API ────────────────────────────────────────────
 
+// 一次性下载 token { token -> expiresAt }
+const dlTokens = new Map();
+
+// 生成扩展下载链接（需要 Bearer Token，返回 60 秒有效的一次性链接）
+app.post('/gen-download-link', (req, res) => {
+  const pluginDir = path.join(process.env.HOME || '/root', '.openclaw/extensions/cloudhand');
+  const zipPath = path.join(pluginDir, 'extension.zip');
+  if (!fs.existsSync(zipPath)) {
+    return res.status(404).json({ error: 'Extension zip not found. Restart gateway to rebuild.' });
+  }
+  const dlToken = crypto.randomBytes(24).toString('hex');
+  dlTokens.set(dlToken, Date.now() + 60000);
+  setTimeout(() => dlTokens.delete(dlToken), 60000);
+  // 读取公网 IP
+  let publicIp = '127.0.0.1';
+  try {
+    const bc = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    publicIp = bc.publicIp || publicIp;
+  } catch(e) {}
+  const url = `http://${publicIp}:${PORT}/download-ext?t=${dlToken}`;
+  res.json({ url, expiresIn: 60 });
+});
+
+// 一次性下载端点（无需鉴权，但 dltoken 必须有效）
+app.get('/download-ext', (req, res) => {
+  const t = req.query.t || '';
+  const expiresAt = dlTokens.get(t);
+  if (!t || !expiresAt || Date.now() > expiresAt) {
+    return res.status(401).json({ error: 'Invalid or expired download token.' });
+  }
+  dlTokens.delete(t);
+  const pluginDir = path.join(process.env.HOME || '/root', '.openclaw/extensions/cloudhand');
+  const zipPath = path.join(pluginDir, 'extension.zip');
+  if (!fs.existsSync(zipPath)) {
+    return res.status(404).json({ error: 'Extension zip not found.' });
+  }
+  res.download(zipPath, 'cloudhand-extension.zip', (err) => {
+    if (!err) {
+      try { fs.unlinkSync(zipPath); } catch(e) {}
+      console.log('[cloudhand] Extension zip downloaded and deleted.');
+    }
+  });
+});
+
 // 获取 apiToken（仅限 127.0.0.1 本机访问）
 app.get('/token', (req, res) => {
   const ip = req.ip || req.connection.remoteAddress || '';

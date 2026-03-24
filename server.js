@@ -387,11 +387,4 @@ server.listen(PORT, HOST, () => {
   console.log(`Config: ${CONFIG_FILE}`);
   console.log(`Paired: ${!!config.sessionToken}`);
 
-  // 启动后发飞书通知
-  const { execFile } = require('child_process');
-  const notifyScript = require('path').join(__dirname, 'notify-start.sh');
-  execFile('bash', [notifyScript], { timeout: 30000 }, (err, stdout, stderr) => {
-    if (err) console.log('[cloudhand] notify error:', err.message);
-    else console.log('[cloudhand] notify sent');
-  });
 });

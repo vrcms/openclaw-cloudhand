@@ -5,6 +5,8 @@
 [![Version](https://img.shields.io/badge/version-2.1.0-blue.svg)](https://github.com/vrcms/openclaw-cloudhand)
 [![OpenClaw Plugin](https://img.shields.io/badge/openclaw-plugin-orange.svg)](https://openclaw.ai)
 
+English | **[中文文档](README.zh.md)**
+
 ## What is CloudHand?
 
 CloudHand is an OpenClaw plugin that bridges your remote AI agent (running on a VPS) to your local Chrome browser. It lets the AI:

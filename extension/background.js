@@ -522,21 +522,34 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 function injectWatcher(tabId) {
-  // 先注入完整的 content_script（处理扩展更新后旧tab未重注入的情况）
+  // 注入完整 content_script 到 ISOLATED world（与 content_script 同一 world）
+  // 如果已注入过（有 __cloudhandWatcher），会被 IIFE 开头的 guard 拦住，不会重复
   chrome.scripting.executeScript({
     target: { tabId },
     files: ['content_script.js']
-  }).catch(() => {
-    // 注入失败（可能已注入），直接设标记+调用
-  });
-  // 同时设标记并直接调用 tryStart
-  chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
-      window.__cloudhandIsAgent = true;
-      if (typeof window.__cloudhandTryStart === 'function') {
-        window.__cloudhandTryStart();
+  }).then(() => {
+    // 注入后在 ISOLATED world 设标记并调用 tryStart
+    chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'ISOLATED',
+      func: () => {
+        window.__cloudhandIsAgent = true;
+        if (typeof window.__cloudhandTryStart === 'function') {
+          window.__cloudhandTryStart();
+        }
       }
-    }
-  }).catch(() => {});
+    }).catch(() => {});
+  }).catch(() => {
+    // 注入失败时直接设标记（可能已注入）
+    chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'ISOLATED',
+      func: () => {
+        window.__cloudhandIsAgent = true;
+        if (typeof window.__cloudhandTryStart === 'function') {
+          window.__cloudhandTryStart();
+        }
+      }
+    }).catch(() => {});
+  });
 }

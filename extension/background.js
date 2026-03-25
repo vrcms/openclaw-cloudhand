@@ -433,9 +433,41 @@ async function handleCommand(command, params) {
       }));
     }
 
+    case 'get_browser_state': {
+      return sendPageControl(tabId, 'get_browser_state', {});
+    }
+
+    case 'click_element': {
+      if (!params.index) throw new Error('index is required');
+      return sendPageControl(tabId, 'click_element', { index: params.index });
+    }
+
+    case 'input_text_element': {
+      if (!params.index) throw new Error('index is required');
+      if (params.text === undefined) throw new Error('text is required');
+      return sendPageControl(tabId, 'input_text', { index: params.index, text: params.text });
+    }
+
+    case 'ping_page_controller': {
+      return sendPageControl(tabId, 'ping', {});
+    }
+
     default:
       throw new Error('Unknown command: ' + command);
   }
+}
+
+// 向 content_script(ISOLATED world) 发送 CH_PAGE_CONTROL 消息
+function sendPageControl(tabId, action, payload) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.sendMessage(tabId, { type: 'CH_PAGE_CONTROL', action, payload }, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+      } else {
+        resolve(response);
+      }
+    });
+  });
 }
 
 // ── Agent 窗口关闭感知 ──────────────────────────────────

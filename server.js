@@ -75,14 +75,21 @@ wss.on('connection', (ws, req) => {
 
   // 方式1：challenge 配对（首次连接）
   if (challenge) {
+    const wsIp = req.socket.remoteAddress || 'unknown';
+    if (isChallengeBlacklisted(wsIp)) {
+      ws.close(1008, 'IP blacklisted');
+      console.log(`[Security] Blocked blacklisted IP: ${wsIp}`);
+      return;
+    }
     if (!pendingChallenge || Date.now() > pendingChallenge.expiresAt) {
       ws.close(1008, 'Challenge expired or not found');
       console.log('[WS] Rejected: challenge expired');
       return;
     }
     if (challenge !== pendingChallenge.code) {
+      recordChallengeFailure(wsIp);
       ws.close(1008, 'Invalid challenge');
-      console.log('[WS] Rejected: invalid challenge');
+      console.log(`[WS] Rejected: invalid challenge from ${wsIp}`);
       return;
     }
     // challenge 验证通过，生成 session token
@@ -325,6 +332,26 @@ app.get('/status', (req, res) => {
 
 // challenge 速率限制（每个 IP 每分钟最多 5 次）
 const challengeRateLimit = new Map(); // ip -> { count, resetAt }
+const challengeFailBlacklist = new Map(); // ip -> unbanAt（连续失败3次封10分钟）
+
+function isChallengeBlacklisted(ip) {
+  const unbanAt = challengeFailBlacklist.get(ip);
+  if (!unbanAt) return false;
+  if (Date.now() > unbanAt) { challengeFailBlacklist.delete(ip); return false; }
+  return true;
+}
+
+function recordChallengeFailure(ip) {
+  const entry = challengeRateLimit.get(ip) || { count: 0, resetAt: Date.now() + 60000 };
+  entry.count++;
+  if (entry.count >= 3) {
+    challengeFailBlacklist.set(ip, Date.now() + 600000); // 封10分钟
+    challengeRateLimit.delete(ip);
+    console.log(`[Security] IP ${ip} blacklisted for 10min (3 failed challenges)`);
+  } else {
+    challengeRateLimit.set(ip, entry);
+  }
+}
 function checkChallengeRate(ip) {
   const now = Date.now();
   const entry = challengeRateLimit.get(ip) || { count: 0, resetAt: now + 60000 };
@@ -341,7 +368,7 @@ app.post('/pair/challenge', (req, res) => {
     return res.status(429).json({ error: 'Too many requests. Max 5 per minute.' });
   }
   const code = String(Math.floor(100000 + Math.random() * 900000));
-  pendingChallenge = { code, expiresAt: Date.now() + 30000 };
+  pendingChallenge = { code, expiresAt: Date.now() + 120000 }; // 120秒有效
   console.log(`[Pair] Challenge generated: ${code}`);
   res.json({ code, expiresAt: pendingChallenge.expiresAt });
 });

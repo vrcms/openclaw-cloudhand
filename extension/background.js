@@ -56,6 +56,12 @@ function connect() {
         console.log('[Bridge] Paired, session token saved');
         return;
       }
+      // server 请求版本号
+      if (msg.type === 'get_version') {
+        const manifest = chrome.runtime.getManifest();
+        ws.send(JSON.stringify({ type: 'version_report', version: manifest.version }));
+        return;
+      }
       // 收到服务端指令
       if (msg.requestId && msg.command) {
         try {

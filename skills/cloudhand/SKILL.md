@@ -29,6 +29,123 @@ description: |
 
 ---
 
+## 🧹 Tab 清理规则（必须遵守）
+
+- **每次任务完成后，关闭所有我打开的非活跃 tab**，只保留最后一个
+- **只关 agent 窗口（`/agent_windows` 返回的 windowId）下的 tab**，东哥其他窗口绝对不动
+- 关闭方法：`POST /close_tab {tabId: id}`
+- 判断标准：`active: false` 且在 agent 窗口下 → 关闭
+
+```python
+# 任务结束时标准清理流程
+agent_tabs = [t for t in all_tabs if t['windowId'] == AGENT_WIN]
+to_close = [t['id'] for t in agent_tabs if not t['active']]
+if len(to_close) >= len(agent_tabs):
+    to_close = to_close[1:]  # 至少保留1个
+for tab_id in to_close:
+    requests.post('/close_tab', json={'tabId': tab_id})
+```
+
+---
+
+## 🧠 站点经验库（执行网页任务必读）
+
+### 任务前：读取经验
+**每次执行网页任务前**，先检查是否有该站点的经验文件：
+
+```bash
+cat /root/.openclaw/workspace/browser-knowledge/<domain>.md 2>/dev/null || echo "无经验文件"
+# 也看通用经验
+cat /root/.openclaw/workspace/browser-knowledge/_common.md
+```
+
+经验文件目录：`/root/.openclaw/workspace/browser-knowledge/`
+- **一个域名 = 一个文件**，文件名就是域名，如 `douyin.com.md`、`toutiao.com.md`、`bing.com.md`
+- **严禁混合**：不同域名的经验绝对不能写在同一个文件里（例如：Bing 的经验不能写进 toutiao.com.md）
+- `_common.md`：通用技巧，适用于所有网站（SPA 等待、懒加载、data-e2e 选择器优先级等）
+- 写经验前先确认：「这条经验属于哪个域名？」然后写到对应文件
+
+### 🆕 第一次访问新域名：必须建立完整经验文件
+
+**判断条件**：`browser-knowledge/<domain>.md` 不存在，即为首次访问。
+
+首次访问时，用以下 JS 提取页面结构，再用 AI 语言总结写入经验文件：
+
+```javascript
+// 提取可见叶节点（有文字内容的末端元素）
+JSON.stringify(
+  [...document.querySelectorAll('*')]
+    .filter(el => el.children.length === 0 && el.innerText.trim().length > 3)
+    .map(el => {
+      const r = el.getBoundingClientRect();
+      return {tag: el.tagName.toLowerCase(), text: el.innerText.trim().slice(0,60),
+              cls: el.className.toString().slice(0,60), attr: el.getAttribute('data-e2e')||"",
+              x: Math.round(r.x), y: Math.round(r.y)};
+    })
+    .filter(el => el.y >= 0 && el.y < window.innerHeight * 2)
+    .slice(0, 150)
+)
+```
+
+**经验文件必须包含以下四类信息：**
+
+```markdown
+# <domain> 经验
+
+## 主内容选择器
+- 正文：`<selector>`
+- 列表（feed流/搜索结果）：`<selector>`
+- 评论：`<selector>`
+- 搜索框：`<selector>`
+
+## 操作路径
+- 搜索：步骤描述
+- 翻页/加载更多：步骤描述
+- 进入详情：步骤描述
+
+## 注意事项
+- 是否需要登录
+- 是否懒加载（需滚动）
+- 有无反爬/验证码
+```
+
+---
+
+### ⚠️⚠️⚠️ 任务后：写入经验【强制，不可跳过】
+**==每次云手任务完成，必须先写经验，再发汇报。不写经验 = 任务未完成。==**
+
+哪怕只有一句话，也必须写：
+
+```bash
+# 追加经验到站点文件（没有就创建）
+cat >> /root/.openclaw/workspace/browser-knowledge/<domain>.md << 'EOF'
+## 更新 YYYY-MM-DD
+- 有效选择器：xxx
+- 需要等待：sleep(N秒)
+- 踩坑：xxx
+EOF
+```
+
+**必须记录的内容：**
+- 有效的 CSS 选择器 / data-e2e 属性（这是最宝贵的）
+- 需要等待的时间（sleep 多少秒才能看到内容）
+- 懒加载触发方式（滚动几次、滚多少像素）
+- 踩过的坑（错误选择器、跳转页、编码问题等）
+- 登录要求（是否需要 Cookie、如何判断已登录）
+
+**目的**：下次执行同类任务直接用已知经验，不重复调试，节省大量时间。
+
+> **⛔ 禁止行为**：执行完任务直接发汇报，跳过写经验步骤。这是失职，不可接受。
+
+### 通用规则（优先于特定站点经验）
+- `data-e2e` 属性 > class 名（class 是哈希，随构建变化；data-e2e 是语义稳定属性）
+- SPA 页面（React/Vue）：navigate 后必须 `sleep(3~5)` 等渲染
+- 评论/内容懒加载：先滚动页面 2~3 次再提取
+- 用 `/eval` 注入 JS 比截图快 90%，比解析 HTML 省 80%
+- shell 变量为空时不要拼接 JSON（会生成 `{"key":}` 非法 JSON）→ 改用 Python requests
+
+---
+
 ## 🚨 行为规范（必读，违反=出 bug）
 
 1. **查「用户在看什么」→ 用 `/tabs`，绝不用截图**

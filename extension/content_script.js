@@ -6,22 +6,32 @@
 
   // 先确认当前 tab 是否属于 agent 窗口，不是则静默退出
   // 加重试：background service worker 可能刚启动，storage 未恢复完
+  // 方式1：background 已主动注入标记（最可靠）
+  if (window.__cloudhandIsAgent) {
+    startWatcher();
+    return;
+  }
+
+  // 方式2：监听 background 的确认事件
+  window.addEventListener('cloudhand_agent_confirmed', () => {
+    if (!window.__cloudhandWatcher) startWatcher();
+  }, { once: true });
+
+  // 方式3：降级 sendMessage（兜底，最多重试10次）
   function checkIsAgent(retries) {
     chrome.runtime.sendMessage({ type: 'is_agent_window' }, (resp) => {
       if (chrome.runtime.lastError) {
-        // background 还没准备好，稍后重试
         if (retries > 0) setTimeout(() => checkIsAgent(retries - 1), 1000);
         return;
       }
       if (resp && resp.isAgent) {
         startWatcher();
       } else if (retries > 0) {
-        // storage 可能还在恢复，再等一下
         setTimeout(() => checkIsAgent(retries - 1), 1000);
       }
     });
   }
-  checkIsAgent(10); // 最多重试10次（每500ms，共5秒）
+  checkIsAgent(10);
 
   function startWatcher() {
   window.__cloudhandWatcher = true;

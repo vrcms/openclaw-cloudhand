@@ -454,8 +454,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // content_script 启动时查询当前 tab 是否属于 agent 窗口
   if (msg.type === 'is_agent_window') {
     const windowId = sender.tab?.windowId;
-    sendResponse({ isAgent: windowId != null && agentWindows.has(windowId) });
-    return true;
+    if (windowId == null) { sendResponse({ isAgent: false }); return true; }
+    if (agentWindows.has(windowId)) {
+      sendResponse({ isAgent: true }); return true;
+    }
+    // 内存 Set 可能还未从 storage 恢复，直接查 storage 兜底
+    chrome.storage.session.get('agentWindowIds').then(r => {
+      const ids = r.agentWindowIds || [];
+      if (ids.includes(windowId)) agentWindows.add(windowId); // 顺便补回内存
+      sendResponse({ isAgent: ids.includes(windowId) });
+    });
+    return true; // 异步 sendResponse
   }
   if (msg.type !== 'user_actions') return;
   if (!ws || ws.readyState !== WebSocket.OPEN) return;

@@ -237,8 +237,8 @@ const dlTokens = new Map();
 app.post('/gen-download-link', (req, res) => {
   const pluginDir = path.join(process.env.HOME || '/root', '.openclaw/extensions/cloudhand');
   const zipPath = path.join(pluginDir, 'extension.zip');
-  // zip 不存在时自动重新打包
-  if (!fs.existsSync(zipPath)) {
+  // 每次都强制重新打包（确保最新版本）
+  if (true) {
     try {
       const extDir = path.join(pluginDir, 'extension');
       const os = require('os');

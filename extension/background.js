@@ -522,11 +522,18 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 function injectWatcher(tabId) {
+  // 先注入完整的 content_script（处理扩展更新后旧tab未重注入的情况）
+  chrome.scripting.executeScript({
+    target: { tabId },
+    files: ['content_script.js']
+  }).catch(() => {
+    // 注入失败（可能已注入），直接设标记+调用
+  });
+  // 同时设标记并直接调用 tryStart
   chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
       window.__cloudhandIsAgent = true;
-      // 如果 content_script 已注入且暴露了 __cloudhandTryStart，直接调用
       if (typeof window.__cloudhandTryStart === 'function') {
         window.__cloudhandTryStart();
       }

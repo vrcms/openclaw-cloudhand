@@ -232,6 +232,11 @@ async function handleCommand(command, params) {
     await chrome.tabs.update(params.tabId, { active: true });
     return { ok: true, tabId: params.tabId };
   }
+  if (command === 'inject_watcher') {
+    const tabId = params.tabId;
+    if (tabId) injectWatcher(tabId);
+    return { ok: true };
+  }
   if (command === 'new_window') {
     const url = params.url || 'about:blank';
     const win = await chrome.windows.create({

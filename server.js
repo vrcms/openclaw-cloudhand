@@ -495,6 +495,10 @@ const route = (cmd, extract) => async (req, res) => {
       try {
         await sendCommand('focus_tab', { tabId: currentAgentTabId });
       } catch(e) { /* ignore */ }
+      // 主动注入 watcher 标记（确保 content_script 知道这是 agent tab）
+      try {
+        await sendCommand('inject_watcher', { tabId: currentAgentTabId });
+      } catch(e) { /* ignore */ }
     }
     res.json({ ok: true, result });
   }

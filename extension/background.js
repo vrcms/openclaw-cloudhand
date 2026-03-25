@@ -8,11 +8,11 @@ let serverUrl = null;
 const agentWindows = new Set(); // 扩展内部追踪 agent 窗口
 
 // 从 storage 恢复 agentWindows（service worker 重启后恢复）
-chrome.storage.session.get('agentWindowIds').then(r => {
+chrome.storage.local.get('agentWindowIds').then(r => {
   (r.agentWindowIds || []).forEach(id => agentWindows.add(id));
 });
 function saveAgentWindows() {
-  chrome.storage.session.set({ agentWindowIds: [...agentWindows] });
+  chrome.storage.local.set({ agentWindowIds: [...agentWindows] });
 }
 
 import { CLOUDHAND_CONFIG } from './config.js';
@@ -465,7 +465,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ isAgent: true }); return true;
     }
     // 内存 Set 可能还未从 storage 恢复，直接查 storage 兜底
-    chrome.storage.session.get('agentWindowIds').then(r => {
+    chrome.storage.local.get('agentWindowIds').then(r => {
       const ids = r.agentWindowIds || [];
       if (ids.includes(windowId)) agentWindows.add(windowId); // 顺便补回内存
       sendResponse({ isAgent: ids.includes(windowId) });

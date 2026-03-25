@@ -437,6 +437,10 @@ async function handleCommand(command, params) {
       return sendPageControl(tabId, 'get_browser_state', {});
     }
 
+    case 'debug_dom': {
+      return sendPageControl(tabId, 'debug_dom', {});
+    }
+
     case 'click_element': {
       if (!params.index) throw new Error('index is required');
       return sendPageControl(tabId, 'click_element', { index: params.index });

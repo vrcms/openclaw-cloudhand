@@ -54,24 +54,43 @@ This will:
 
 ### Chrome Extension
 
-1. Download the extension ZIP from your VPS:
+1. **Get a secure download link from your AI agent:**
+
+   Ask the agent: "给我云手的下载链接" ("Give me the CloudHand download link")
+
+   The agent will generate a one-time link valid for **60 seconds**:
    ```
-   http://YOUR_VPS_IP:9876/extension.zip
+   http://YOUR_VPS_IP:9876/download-ext?t=<token>
    ```
-   Or from: [Releases](https://github.com/vrcms/openclaw-cloudhand/releases)
+   > ⚠️ The link expires in 60 seconds. Download immediately.
+
+   Alternatively, generate it manually:
+   ```bash
+   TOKEN=$(curl -s http://YOUR_VPS_IP:9876/token | python3 -c 'import sys,json; print(json.load(sys.stdin)["apiToken"])')
+   curl -s -X POST http://YOUR_VPS_IP:9876/gen-download-link -H "Authorization: Bearer $TOKEN"
+   ```
 
 2. Unzip and load in Chrome:
    - Open `chrome://extensions/`
    - Enable **Developer mode**
    - Click **Load unpacked** → select the `extension/` folder
+   - (The extension is pre-configured with your VPS IP — no manual setup needed)
 
-3. Configure the extension:
-   - Click the CloudHand icon
-   - Enter your VPS address (e.g. `YOUR_VPS_IP:9876`)
-   - Click **Connect**
+3. **Pair with the AI agent:**
 
-4. Pair with the AI:
-   - Tell your AI: "帮我连接浏览器" (or "pair cloudhand")
+   Ask the agent: "生成配对码" ("Generate pairing code")
+
+   The agent will reply with a **6-digit code** valid for **30 seconds**.
+
+   - Click the CloudHand icon in Chrome toolbar
+   - Enter the 6-digit pairing code
+   - Click **Pair**
+
+   ✅ Done! The agent can now control your browser.
+
+   > 💡 Pairing persists across browser restarts. You only need to pair once (unless you reinstall the extension).
+
+4. Tell your AI: "帮我连接浏览器" (or "pair cloudhand")
    - The AI will generate a 6-digit code
    - Enter the code in the extension popup
 

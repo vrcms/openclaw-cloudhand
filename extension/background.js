@@ -217,6 +217,21 @@ async function handleCommand(command, params) {
     await chrome.tabs.update(params.tabId, { active: true });
     return { ok: true, tabId: params.tabId };
   }
+  if (command === 'new_window') {
+    const url = params.url || 'about:blank';
+    const win = await chrome.windows.create({
+      url,
+      focused: false,
+      type: 'normal',
+      width: 1920,
+      height: 1080,
+      left: 0,
+      top: 0
+    });
+    await chrome.windows.update(win.id, { state: 'minimized' });
+    const newTab = win.tabs?.[0];
+    return { windowId: win.id, tabId: newTab?.id, url: newTab?.url };
+  }
 
   const tab = await getTab(params.tabId);
   if (!tab) throw new Error('No active tab found');
@@ -380,23 +395,7 @@ async function handleCommand(command, params) {
       return { cookies: cookies.map(c => ({ name: c.name, value: c.value, domain: c.domain })) };
     }
 
-    case 'new_window': {
-      const url = params.url || 'about:blank';
-      // 创建 1920x1080 窗口，确保桌面布局渲染，然后立刻最小化，不抢焦点
-      const win = await chrome.windows.create({
-        url,
-        focused: false,
-        type: 'normal',
-        width: 1920,
-        height: 1080,
-        left: 0,
-        top: 0
-      });
-      // 立刻最小化，放到任务栏，不影响用户工作区
-      await chrome.windows.update(win.id, { state: 'minimized' });
-      const newTab = win.tabs?.[0];
-      return { windowId: win.id, tabId: newTab?.id, url: newTab?.url };
-    }
+
 
     case 'close_tab': {
       await chrome.tabs.remove(tabId);

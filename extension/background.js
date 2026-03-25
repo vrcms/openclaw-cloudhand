@@ -438,6 +438,18 @@ async function handleCommand(command, params) {
   }
 }
 
+// ── 用户行为学习：接收 content_script 上报，转发给 server ──
+chrome.runtime.onMessage.addListener((msg, sender) => {
+  if (msg.type !== 'user_actions') return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({
+    type: 'user_actions',
+    domain: msg.domain,
+    actions: msg.actions,
+    tabId: sender.tab?.id
+  }));
+});
+
 // ── Agent 窗口关闭感知 ──────────────────────────────────
 // 当用户手动关闭窗口时，主动通知 server 从 agentWindows 里清掉
 chrome.windows.onRemoved.addListener((windowId) => {

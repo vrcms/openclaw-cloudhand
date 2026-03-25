@@ -137,6 +137,21 @@ function setupSocket(ws) {
         }
       } else if (type === 'tab_removed') {
         // tab 关闭时不需要特殊处理，window_removed 会处理窗口级别
+      } else if (type === 'user_actions' && msg.domain && msg.actions?.length) {
+        // 用户行为学习：写入域名经验文件
+        const domain = msg.domain.replace(/[^a-z0-9.-]/gi, '');
+        const file = path.join(process.env.HOME, '.openclaw/workspace/browser-knowledge', domain + '.md');
+        const lines = msg.actions.map(a => {
+          if (a.type === 'click') return `- 点击: ${a.text || a.selector} (${a.tag || 'el'})`;
+          if (a.type === 'input') return `- 输入: ${a.text} @ ${a.placeholder || a.selector}`;
+          if (a.type === 'navigate') return `- 跳转: ${a.to?.slice(0,80)}`;
+          if (a.type === 'scroll') return `- 滚动到 y=${a.y}`;
+          return `- ${a.type}`;
+        }).join('\n');
+        const entry = `\n## 用户操作记录 ${new Date().toISOString().slice(0,16)}\n${lines}\n`;
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.appendFileSync(file, entry);
+        console.log(`[Learn] ${msg.actions.length} actions saved to ${domain}.md`);
       } else if (requestId && pendingRequests[requestId]) {
         const { resolve, reject, timeout } = pendingRequests[requestId];
         clearTimeout(timeout);

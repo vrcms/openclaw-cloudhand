@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CloudHand Chrome Bridge",
-  "version": "2.4.2",
+  "version": "2.4.3",
   "description": "云手 - 连接本地Chrome和远程AI助理，让AI控制你的浏览器",
   "permissions": [
     "tabs",

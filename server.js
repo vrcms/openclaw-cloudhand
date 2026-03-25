@@ -225,8 +225,8 @@ app.post('/gen-download-link', (req, res) => {
     }
   }
   const dlToken = crypto.randomBytes(24).toString('hex');
-  dlTokens.set(dlToken, Date.now() + 60000);
-  setTimeout(() => dlTokens.delete(dlToken), 60000);
+  dlTokens.set(dlToken, Date.now() + 120000);
+  setTimeout(() => dlTokens.delete(dlToken), 120000);
   // 读取公网 IP
   let publicIp = '127.0.0.1';
   try {
@@ -234,7 +234,7 @@ app.post('/gen-download-link', (req, res) => {
     publicIp = bc.publicIp || publicIp;
   } catch(e) {}
   const url = `http://${publicIp}:${PORT}/download-ext?t=${dlToken}`;
-  res.json({ url, expiresIn: 60 });
+  res.json({ url, expiresIn: 120 });
 });
 
 // 一次性下载端点（无需鉴权，但 dltoken 必须有效）
@@ -542,7 +542,7 @@ async function handleSnapshot(req, res) {
 ['navigate','screenshot','get_html','get_text','click','type','key','scroll',
  'wait_for','get_cookies','new_tab','new_window','close_tab','focus_tab','hover','hotkey',
  'find_elements','set_value','go_back','go_forward','select','eval',
- 'get_browser_state','click_element','input_text_element','ping_page_controller'].forEach(cmd => {
+ 'get_browser_state','click_element','input_text_element','ping_page_controller','debug_dom'].forEach(cmd => {
   app.post('/' + cmd, route(cmd));
 });
 

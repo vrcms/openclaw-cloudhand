@@ -17,7 +17,7 @@
 
     for (const [id, nodeData] of Object.entries(map)) {
       if (!nodeData.isInteractive) continue;
-      const el = nodeData.element;
+      const el = nodeData.ref || nodeData.element;
       if (!el || !el.isConnected) continue;
       const tag = (el.tagName || 'div').toLowerCase();
       if (SKIP_TAGS.has(tag)) continue;
@@ -149,7 +149,7 @@
           }
           const r = window.__domTree({ doHighlightElements: false, viewportExpansion: -1, debugMode: false, interactiveBlacklist: [], interactiveWhitelist: [], highlightOpacity: 0.1, highlightLabelOpacity: 0.5 });
           const mapKeys = Object.keys(r.map || {});
-          const sample = mapKeys.slice(0, 3).map(k => ({ key: k, isInteractive: r.map[k].isInteractive, hasEl: !!r.map[k].element, tag: r.map[k].element?.tagName }));
+          const sample = mapKeys.slice(0, 3).map(k => ({ key: k, isInteractive: r.map[k].isInteractive, hasEl: !!(r.map[k].ref||r.map[k].element), tag: (r.map[k].ref||r.map[k].element)?.tagName }));
           sendResponse({ ok: true, rootId: r.rootId, mapSize: mapKeys.length, sample });
           break;
         }

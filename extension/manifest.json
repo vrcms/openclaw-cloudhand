@@ -10,7 +10,8 @@
     "cookies",
     "alarms",
     "scripting",
-    "storage"
+    "storage",
+    "sessions"
   ],
   "host_permissions": [
     "<all_urls>"

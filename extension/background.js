@@ -7,6 +7,14 @@ let sessionToken = null;
 let serverUrl = null;
 const agentWindows = new Set(); // 扩展内部追踪 agent 窗口
 
+// 从 storage 恢复 agentWindows（service worker 重启后恢复）
+chrome.storage.session.get('agentWindowIds').then(r => {
+  (r.agentWindowIds || []).forEach(id => agentWindows.add(id));
+});
+function saveAgentWindows() {
+  chrome.storage.session.set({ agentWindowIds: [...agentWindows] });
+}
+
 import { CLOUDHAND_CONFIG } from './config.js';
 console.log('[CloudHand] CLOUDHAND_CONFIG:', typeof CLOUDHAND_CONFIG, JSON.stringify(CLOUDHAND_CONFIG));
 const DEFAULT_SERVER = CLOUDHAND_CONFIG.wsUrl;
@@ -231,6 +239,7 @@ async function handleCommand(command, params) {
     });
     await chrome.windows.update(win.id, { state: 'minimized' });
     agentWindows.add(win.id); // 记录为 agent 窗口
+    saveAgentWindows();
     const newTab = win.tabs?.[0];
     return { windowId: win.id, tabId: newTab?.id, url: newTab?.url };
   }
@@ -462,6 +471,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // 当用户手动关闭窗口时，主动通知 server 从 agentWindows 里清掉
 chrome.windows.onRemoved.addListener((windowId) => {
   agentWindows.delete(windowId); // 从 agent 窗口集合中移除
+  saveAgentWindows();
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'window_removed', windowId }));
     console.log('[CloudHand] Window removed, notified server:', windowId);

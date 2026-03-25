@@ -347,7 +347,8 @@ function recordChallengeFailure(ip) {
   if (entry.count >= 3) {
     challengeFailBlacklist.set(ip, Date.now() + 600000); // 封10分钟
     challengeRateLimit.delete(ip);
-    console.log(`[Security] IP ${ip} blacklisted for 10min (3 failed challenges)`);
+    pendingChallenge = null; // 作废当前 challenge，防止暴力猜测
+    console.log(`[Security] IP ${ip} blacklisted for 10min, challenge invalidated (3 failed attempts)`);
   } else {
     challengeRateLimit.set(ip, entry);
   }

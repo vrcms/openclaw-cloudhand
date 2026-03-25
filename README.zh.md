@@ -58,26 +58,41 @@ bash <(curl -fsSL https://raw.githubusercontent.com/vrcms/openclaw-cloudhand/mai
 
 ### 第二步：安装 Chrome 扩展
 
-1. 从 VPS 下载扩展 ZIP：
+1. **向 AI 获取安全下载链接：**
+
+   对 AI 说：「给我云手的下载链接」
+
+   AI 会生成一个 **60 秒有效** 的一次性链接：
    ```
-   http://你的VPS地址:9876/extension.zip
+   http://你的VPS地址:9876/download-ext?t=<token>
    ```
-   或从 [Releases](https://github.com/vrcms/openclaw-cloudhand/releases) 下载
+   > ⚠️ 链接 60 秒后失效，请立即下载。
+
+   也可手动生成：
+   ```bash
+   TOKEN=$(curl -s http://你的VPS地址:9876/token | python3 -c 'import sys,json; print(json.load(sys.stdin)["apiToken"])')
+   curl -s -X POST http://你的VPS地址:9876/gen-download-link -H "Authorization: Bearer $TOKEN"
+   ```
 
 2. 在 Chrome 中加载：
    - 打开 `chrome://extensions/`
    - 开启右上角**开发者模式**
    - 点击**加载已解压的扩展程序** → 选择解压后的 `extension/` 目录
+   - （扩展已预置 VPS IP，无需手动填写地址）
 
-3. 配置扩展：
-   - 点击 CloudHand 扩展图标
-   - 填入 VPS 地址（例如 `YOUR_VPS_IP:9876`）
-   - 点击**连接**
+3. **与 AI 配对：**
 
-4. 与 AI 配对：
-   - 对 AI 说：「帮我连接浏览器」
-   - AI 会生成一个 6 位验证码
-   - 在扩展弹窗中输入验证码完成配对
+   对 AI 说：「生成配对码」
+
+   AI 会回复一个 **6 位验证码**，有效期 **30 秒**。
+
+   - 点击 Chrome 工具栏中的 CloudHand 图标
+   - 输入 6 位验证码
+   - 点击**配对**
+
+   ✅ 完成！AI 即可控制你的浏览器。
+
+   > 💡 配对信息在浏览器重启后依然有效，只需配对一次（重新安装扩展除外）。
 
 ## 可用的 AI 工具
 

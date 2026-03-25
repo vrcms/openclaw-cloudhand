@@ -5,10 +5,23 @@
   if (window.__cloudhandWatcher) return; // 防重复注入
 
   // 先确认当前 tab 是否属于 agent 窗口，不是则静默退出
-  chrome.runtime.sendMessage({ type: 'is_agent_window' }, (resp) => {
-    if (!resp || !resp.isAgent) return; // 不是 agent 窗口，不监听
-    startWatcher();
-  });
+  // 加重试：background service worker 可能刚启动，storage 未恢复完
+  function checkIsAgent(retries) {
+    chrome.runtime.sendMessage({ type: 'is_agent_window' }, (resp) => {
+      if (chrome.runtime.lastError) {
+        // background 还没准备好，稍后重试
+        if (retries > 0) setTimeout(() => checkIsAgent(retries - 1), 500);
+        return;
+      }
+      if (resp && resp.isAgent) {
+        startWatcher();
+      } else if (retries > 0) {
+        // storage 可能还在恢复，再等一下
+        setTimeout(() => checkIsAgent(retries - 1), 500);
+      }
+    });
+  }
+  checkIsAgent(5); // 最多重试5次（共3秒）
 
   function startWatcher() {
   window.__cloudhandWatcher = true;

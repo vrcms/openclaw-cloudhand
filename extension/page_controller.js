@@ -56,7 +56,11 @@
       const result = window.__domTree({
         doHighlightElements: false,
         viewportExpansion: -1,
-        debugMode: false
+        debugMode: false,
+        interactiveBlacklist: [],
+        interactiveWhitelist: [],
+        highlightOpacity: 0.1,
+        highlightLabelOpacity: 0.5
       });
 
       const content = buildSimplifiedHTML(result.map);

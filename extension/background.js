@@ -18,12 +18,6 @@ function saveAgentWindows() {
 import { CLOUDHAND_CONFIG } from './config.js';
 console.log('[CloudHand] CLOUDHAND_CONFIG:', typeof CLOUDHAND_CONFIG, JSON.stringify(CLOUDHAND_CONFIG));
 const DEFAULT_SERVER = CLOUDHAND_CONFIG.wsUrl;
-
-function dbg(msg, data={}) {
-  const url = DEFAULT_SERVER.replace('ws://', 'http://').replace('/ws', '/log');
-  fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({src:'bg', msg, ...data}) }).catch(()=>{});
-  console.log('[DBG-BG]', msg, data);
-}
 console.log('[CloudHand] DEFAULT_SERVER:', DEFAULT_SERVER);
 
 // 启动时从 storage 读取配置并连接
@@ -237,11 +231,6 @@ async function handleCommand(command, params) {
   if (command === 'focus_tab') {
     await chrome.tabs.update(params.tabId, { active: true });
     return { ok: true, tabId: params.tabId };
-  }
-  if (command === 'inject_watcher') {
-    const tabId = params.tabId;
-    if (tabId) injectWatcher(tabId);
-    return { ok: true };
   }
   if (command === 'new_window') {
     const url = params.url || 'about:blank';
@@ -483,10 +472,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true; // 异步 sendResponse
   }
-  if (msg.type === 'cs_dbg') {
-    dbg('cs: ' + msg.msg, { url: msg.url, tabId: sender.tab?.id });
-    return;
-  }
   if (msg.type !== 'user_actions') return;
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({
@@ -532,34 +517,14 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 function injectWatcher(tabId) {
-  dbg('injectWatcher called', { tabId });
   chrome.scripting.executeScript({
     target: { tabId },
-    files: ['content_script.js']
-  }).then(() => {
-    dbg('content_script injected ok', { tabId });
-    chrome.scripting.executeScript({
-      target: { tabId },
-      world: 'ISOLATED',
-      func: () => {
-        window.__cloudhandIsAgent = true;
-        if (typeof window.__cloudhandTryStart === 'function') {
-          window.__cloudhandTryStart();
-          window.__cloudhandDbgTryStartCalled = true;
-        }
-      }
-    }).catch(e => { /* ignore */ });
-  }).catch(e => {
-    dbg('content_script inject failed, trying direct flag', { tabId, err: e?.message });
-    chrome.scripting.executeScript({
-      target: { tabId },
-      world: 'ISOLATED',
-      func: () => {
-        window.__cloudhandIsAgent = true;
-        if (typeof window.__cloudhandTryStart === 'function') {
-          window.__cloudhandTryStart();
-        }
-      }
-    }).catch(() => {});
-  });
+    func: () => {
+      if (window.__cloudhandWatcherInjected) return;
+      window.__cloudhandWatcherInjected = true;
+      window.__cloudhandIsAgent = true; // 标记为 agent 窗口
+      // 触发 content_script 重新检查（如果已注入）
+      window.dispatchEvent(new CustomEvent('cloudhand_agent_confirmed'));
+    }
+  }).catch(() => {}); // 忽略无法注入的页面（chrome:// 等）
 }

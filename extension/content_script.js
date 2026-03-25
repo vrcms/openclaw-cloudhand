@@ -4,38 +4,20 @@
 (function() {
   if (window.__cloudhandWatcher) return; // 防重复注入
 
-  // 调试上报
-  function csDbg(msg, data={}) {
-    chrome.runtime.sendMessage({ type: 'cs_dbg', msg, ...data }).catch(()=>{});
-    console.log('[DBG-CS]', msg, data);
-  }
-  csDbg('content_script IIFE started', { url: location.href });
-
   // 先确认当前 tab 是否属于 agent 窗口，不是则静默退出
   // 加重试：background service worker 可能刚启动，storage 未恢复完
-  // 统一入口：轮询检查（最多40次×500ms=20秒），同时走 sendMessage
-  // 方式1：window.__cloudhandIsAgent 由 background.injectWatcher 注入
-  // 方式2：sendMessage 直接问 background
-  let _started = false;
-  function tryStart() {
-    if (_started || window.__cloudhandWatcher) return;
-    _started = true;
+  // 方式1：background 已主动注入标记（最可靠）
+  if (window.__cloudhandIsAgent) {
     startWatcher();
+    return;
   }
-  // 暴露给 injectWatcher 直接调用
-  window.__cloudhandTryStart = tryStart;
 
-  // 立即检查一次（injectWatcher 可能在 content_script 之前已注入）
-  if (window.__cloudhandIsAgent) { tryStart(); return; }
+  // 方式2：监听 background 的确认事件
+  window.addEventListener('cloudhand_agent_confirmed', () => {
+    if (!window.__cloudhandWatcher) startWatcher();
+  }, { once: true });
 
-  // 轮询 window.__cloudhandIsAgent（每500ms，共20秒）
-  let _pollCount = 0;
-  const _poll = setInterval(() => {
-    if (window.__cloudhandIsAgent) { clearInterval(_poll); tryStart(); return; }
-    if (++_pollCount >= 40) clearInterval(_poll);
-  }, 500);
-
-  // 同时用 sendMessage 问 background（最多10次×1秒）
+  // 方式3：降级 sendMessage（兜底，最多重试10次）
   function checkIsAgent(retries) {
     chrome.runtime.sendMessage({ type: 'is_agent_window' }, (resp) => {
       if (chrome.runtime.lastError) {
@@ -43,8 +25,7 @@
         return;
       }
       if (resp && resp.isAgent) {
-        clearInterval(_poll);
-        tryStart();
+        startWatcher();
       } else if (retries > 0) {
         setTimeout(() => checkIsAgent(retries - 1), 1000);
       }
@@ -59,8 +40,7 @@
   const actions = [];
 
   // 无意义容器标签，点击时向上找有意义的祖先
-  const SKIP_TAGS = new Set(['body', 'html', 'section', 'article', 'main', 'nav', 'header', 'footer', 'ul', 'li', 'i', 'em', 'svg', 'path']);
-  // div/span 不在 SKIP_TAGS，但通过 innerText 长度限制过滤大容器
+  const SKIP_TAGS = new Set(['body', 'html', 'div', 'span', 'section', 'article', 'main', 'nav', 'header', 'footer', 'ul', 'li', 'i', 'em', 'svg', 'path']);
 
   function getMeaningfulEl(el) {
     let cur = el;
@@ -73,7 +53,7 @@
         cur.getAttribute('placeholder') ||
         cur.getAttribute('role') ||
         ['a', 'button', 'input', 'select', 'textarea', 'label'].includes(tag) ||
-        (!SKIP_TAGS.has(tag) && cur.innerText?.trim().length > 0 && cur.innerText.trim().length < 80)
+        (!SKIP_TAGS.has(tag) && cur.innerText?.trim().length > 0 && cur.innerText.trim().length < 50)
       ) return cur;
       cur = cur.parentElement;
     }

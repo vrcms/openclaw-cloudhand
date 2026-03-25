@@ -495,10 +495,6 @@ const route = (cmd, extract) => async (req, res) => {
       try {
         await sendCommand('focus_tab', { tabId: currentAgentTabId });
       } catch(e) { /* ignore */ }
-      // 主动注入 watcher 标记（确保 content_script 知道这是 agent tab）
-      try {
-        await sendCommand('inject_watcher', { tabId: currentAgentTabId });
-      } catch(e) { /* ignore */ }
     }
     res.json({ ok: true, result });
   }
@@ -603,19 +599,6 @@ async function handleSnapshot(req, res) {
  'wait_for','get_cookies','new_tab','new_window','close_tab','focus_tab','hover','hotkey',
  'find_elements','set_value','go_back','go_forward','select','eval'].forEach(cmd => {
   app.post('/' + cmd, route(cmd));
-});
-
-// ── 调试日志收集 ───────────────────────────────────────────
-const debugLogs = [];
-app.post('/log', (req, res) => {
-  const entry = { ts: new Date().toISOString(), ...req.body };
-  debugLogs.push(entry);
-  if (debugLogs.length > 200) debugLogs.shift();
-  console.log('[DBG]', JSON.stringify(entry));
-  res.json({ ok: true });
-});
-app.get('/log', (req, res) => {
-  res.json({ logs: debugLogs });
 });
 
 // ── 启动 ────────────────────────────────────────────────

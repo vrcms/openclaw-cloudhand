@@ -4,6 +4,13 @@
 (function() {
   if (window.__cloudhandWatcher) return; // 防重复注入
 
+  // 调试上报
+  function csDbg(msg, data={}) {
+    chrome.runtime.sendMessage({ type: 'cs_dbg', msg, ...data }).catch(()=>{});
+    console.log('[DBG-CS]', msg, data);
+  }
+  csDbg('content_script IIFE started', { url: location.href });
+
   // 先确认当前 tab 是否属于 agent 窗口，不是则静默退出
   // 加重试：background service worker 可能刚启动，storage 未恢复完
   // 统一入口：轮询检查（最多40次×500ms=20秒），同时走 sendMessage

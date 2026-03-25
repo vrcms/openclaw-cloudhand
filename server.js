@@ -139,11 +139,11 @@ function setupSocket(ws) {
         // tab 关闭时不需要特殊处理，window_removed 会处理窗口级别
       } else if (type === 'user_actions' && msg.domain && msg.actions?.length) {
         // 用户行为学习：写入域名经验文件
-        const domain = msg.domain.replace(/[^a-z0-9.-]/gi, '');
+        const domain = msg.domain.replace(/[^a-z0-9.-]/gi, '').replace(/^www\./, '');
         const file = path.join(process.env.HOME, '.openclaw/workspace/browser-knowledge', domain + '.md');
         const lines = msg.actions.map(a => {
           if (a.type === 'click') return `- 点击: ${a.text || a.selector} (${a.tag || 'el'})`;
-          if (a.type === 'input') return `- 输入: ${a.text} @ ${a.placeholder || a.selector}`;
+          if (a.type === 'input') return `- 输入: ${a.text.replace(/^输入:\s*/,'')} @ ${a.placeholder || a.selector}`;
           if (a.type === 'navigate') return `- 跳转: ${a.to?.slice(0,80)}`;
           if (a.type === 'scroll') return `- 滚动到 y=${a.y}`;
           return `- ${a.type}`;

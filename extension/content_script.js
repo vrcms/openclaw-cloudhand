@@ -6,18 +6,27 @@
 
   // 先确认当前 tab 是否属于 agent 窗口，不是则静默退出
   // 加重试：background service worker 可能刚启动，storage 未恢复完
-  // 方式1：background 已主动注入标记（最可靠）
-  if (window.__cloudhandIsAgent) {
+  // 统一入口：轮询检查（最多40次×500ms=20秒），同时走 sendMessage
+  // 方式1：window.__cloudhandIsAgent 由 background.injectWatcher 注入
+  // 方式2：sendMessage 直接问 background
+  let _started = false;
+  function tryStart() {
+    if (_started || window.__cloudhandWatcher) return;
+    _started = true;
     startWatcher();
-    return;
   }
 
-  // 方式2：监听 background 的确认事件
-  window.addEventListener('cloudhand_agent_confirmed', () => {
-    if (!window.__cloudhandWatcher) startWatcher();
-  }, { once: true });
+  // 立即检查一次（injectWatcher 可能在 content_script 之前已注入）
+  if (window.__cloudhandIsAgent) { tryStart(); return; }
 
-  // 方式3：降级 sendMessage（兜底，最多重试10次）
+  // 轮询 window.__cloudhandIsAgent（每500ms，共20秒）
+  let _pollCount = 0;
+  const _poll = setInterval(() => {
+    if (window.__cloudhandIsAgent) { clearInterval(_poll); tryStart(); return; }
+    if (++_pollCount >= 40) clearInterval(_poll);
+  }, 500);
+
+  // 同时用 sendMessage 问 background（最多10次×1秒）
   function checkIsAgent(retries) {
     chrome.runtime.sendMessage({ type: 'is_agent_window' }, (resp) => {
       if (chrome.runtime.lastError) {
@@ -25,7 +34,8 @@
         return;
       }
       if (resp && resp.isAgent) {
-        startWatcher();
+        clearInterval(_poll);
+        tryStart();
       } else if (retries > 0) {
         setTimeout(() => checkIsAgent(retries - 1), 1000);
       }

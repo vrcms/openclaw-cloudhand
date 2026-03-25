@@ -131,13 +131,25 @@ wss.on('connection', (ws, req) => {
   console.log('[WS] Rejected unauthorized connection');
 });
 
+let extensionVersion = null; // 扩展上报的版本号
+
 function setupSocket(ws) {
+  // 连接后主动请求扩展版本
+  setTimeout(() => {
+    if (ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({ type: 'get_version' }));
+    }
+  }, 500);
+
   ws.on('message', (data) => {
     try {
       const msg = JSON.parse(data);
       const { requestId, result, error, type, windowId, tabId } = msg;
       // 处理扩展主动推送的事件
-      if (type === 'window_removed' && windowId) {
+      if (type === 'version_report' && msg.version) {
+        extensionVersion = msg.version;
+        console.log(`[Ext] Version reported: ${msg.version}`);
+      } else if (type === 'window_removed' && windowId) {
         if (agentWindows.has(windowId)) {
           agentWindows.delete(windowId);
           console.log(`[Agent] Window ${windowId} closed by user, removed from tracking`);
@@ -324,7 +336,8 @@ app.get('/status', (req, res) => {
     connected: extensionSocket?.readyState === extensionSocket?.OPEN,
     pendingRequests: Object.keys(pendingRequests).length,
     paired: !!config.sessionToken,
-    sessionCreatedAt: config.sessionCreatedAt || null
+    sessionCreatedAt: config.sessionCreatedAt || null,
+    extensionVersion: extensionVersion || 'unknown'
   });
 });
 

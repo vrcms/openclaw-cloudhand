@@ -64,12 +64,6 @@ This will:
    ```
    > ⚠️ The link expires in 60 seconds. Download immediately.
 
-   Alternatively, generate it manually:
-   ```bash
-   TOKEN=$(curl -s http://YOUR_VPS_IP:9876/token | python3 -c 'import sys,json; print(json.load(sys.stdin)["apiToken"])')
-   curl -s -X POST http://YOUR_VPS_IP:9876/gen-download-link -H "Authorization: Bearer $TOKEN"
-   ```
-
 2. Unzip and load in Chrome:
    - Open `chrome://extensions/`
    - Enable **Developer mode**

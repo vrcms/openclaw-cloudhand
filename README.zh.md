@@ -68,12 +68,6 @@ bash <(curl -fsSL https://raw.githubusercontent.com/vrcms/openclaw-cloudhand/mai
    ```
    > ⚠️ 链接 60 秒后失效，请立即下载。
 
-   也可手动生成：
-   ```bash
-   TOKEN=$(curl -s http://你的VPS地址:9876/token | python3 -c 'import sys,json; print(json.load(sys.stdin)["apiToken"])')
-   curl -s -X POST http://你的VPS地址:9876/gen-download-link -H "Authorization: Bearer $TOKEN"
-   ```
-
 2. 在 Chrome 中加载：
    - 打开 `chrome://extensions/`
    - 开启右上角**开发者模式**

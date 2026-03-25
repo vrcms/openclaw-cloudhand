@@ -10,18 +10,18 @@
     chrome.runtime.sendMessage({ type: 'is_agent_window' }, (resp) => {
       if (chrome.runtime.lastError) {
         // background 还没准备好，稍后重试
-        if (retries > 0) setTimeout(() => checkIsAgent(retries - 1), 500);
+        if (retries > 0) setTimeout(() => checkIsAgent(retries - 1), 1000);
         return;
       }
       if (resp && resp.isAgent) {
         startWatcher();
       } else if (retries > 0) {
         // storage 可能还在恢复，再等一下
-        setTimeout(() => checkIsAgent(retries - 1), 500);
+        setTimeout(() => checkIsAgent(retries - 1), 1000);
       }
     });
   }
-  checkIsAgent(5); // 最多重试5次（共3秒）
+  checkIsAgent(10); // 最多重试10次（每500ms，共5秒）
 
   function startWatcher() {
   window.__cloudhandWatcher = true;

@@ -75,21 +75,14 @@ wss.on('connection', (ws, req) => {
 
   // 方式1：challenge 配对（首次连接）
   if (challenge) {
-    const wsIp = req.socket.remoteAddress || 'unknown';
-    if (isChallengeBlacklisted(wsIp)) {
-      ws.close(1008, 'IP blacklisted');
-      console.log(`[Security] Blocked blacklisted IP: ${wsIp}`);
-      return;
-    }
     if (!pendingChallenge || Date.now() > pendingChallenge.expiresAt) {
       ws.close(1008, 'Challenge expired or not found');
       console.log('[WS] Rejected: challenge expired');
       return;
     }
     if (challenge !== pendingChallenge.code) {
-      recordChallengeFailure(wsIp);
       ws.close(1008, 'Invalid challenge');
-      console.log(`[WS] Rejected: invalid challenge from ${wsIp}`);
+      console.log('[WS] Rejected: invalid challenge');
       return;
     }
     // challenge 验证通过，生成 session token
@@ -131,46 +124,19 @@ wss.on('connection', (ws, req) => {
   console.log('[WS] Rejected unauthorized connection');
 });
 
-let extensionVersion = null; // 扩展上报的版本号
-
 function setupSocket(ws) {
-  // 连接后主动请求扩展版本
-  setTimeout(() => {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(JSON.stringify({ type: 'get_version' }));
-    }
-  }, 500);
-
   ws.on('message', (data) => {
     try {
       const msg = JSON.parse(data);
       const { requestId, result, error, type, windowId, tabId } = msg;
       // 处理扩展主动推送的事件
-      if (type === 'version_report' && msg.version) {
-        extensionVersion = msg.version;
-        console.log(`[Ext] Version reported: ${msg.version}`);
-      } else if (type === 'window_removed' && windowId) {
+      if (type === 'window_removed' && windowId) {
         if (agentWindows.has(windowId)) {
           agentWindows.delete(windowId);
           console.log(`[Agent] Window ${windowId} closed by user, removed from tracking`);
         }
       } else if (type === 'tab_removed') {
         // tab 关闭时不需要特殊处理，window_removed 会处理窗口级别
-      } else if (type === 'user_actions' && msg.domain && msg.actions?.length) {
-        // 用户行为学习：写入域名经验文件
-        const domain = msg.domain.replace(/[^a-z0-9.-]/gi, '').replace(/^www\./, '');
-        const file = path.join(process.env.HOME, '.openclaw/workspace/browser-knowledge', domain + '.md');
-        const lines = msg.actions.map(a => {
-          if (a.type === 'click') return `- 点击: ${a.text || a.selector} (${a.tag || 'el'})`;
-          if (a.type === 'input') return `- 输入: ${a.text.replace(/^输入:\s*/,'')} @ ${a.placeholder || a.selector}`;
-          if (a.type === 'navigate') return `- 跳转: ${a.to?.slice(0,80)}`;
-          if (a.type === 'scroll') return `- 滚动到 y=${a.y}`;
-          return `- ${a.type}`;
-        }).join('\n');
-        const entry = `\n## 用户操作记录 ${new Date().toISOString().slice(0,16)}\n${lines}\n`;
-        fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.appendFileSync(file, entry);
-        console.log(`[Learn] ${msg.actions.length} actions saved to ${domain}.md`);
       } else if (requestId && pendingRequests[requestId]) {
         const { resolve, reject, timeout } = pendingRequests[requestId];
         clearTimeout(timeout);
@@ -237,8 +203,8 @@ const dlTokens = new Map();
 app.post('/gen-download-link', (req, res) => {
   const pluginDir = path.join(process.env.HOME || '/root', '.openclaw/extensions/cloudhand');
   const zipPath = path.join(pluginDir, 'extension.zip');
-  // 每次都强制重新打包（确保最新版本）
-  if (true) {
+  // zip 不存在时自动重新打包
+  if (!fs.existsSync(zipPath)) {
     try {
       const extDir = path.join(pluginDir, 'extension');
       const os = require('os');
@@ -336,8 +302,7 @@ app.get('/status', (req, res) => {
     connected: extensionSocket?.readyState === extensionSocket?.OPEN,
     pendingRequests: Object.keys(pendingRequests).length,
     paired: !!config.sessionToken,
-    sessionCreatedAt: config.sessionCreatedAt || null,
-    extensionVersion: extensionVersion || 'unknown'
+    sessionCreatedAt: config.sessionCreatedAt || null
   });
 });
 
@@ -345,27 +310,6 @@ app.get('/status', (req, res) => {
 
 // challenge 速率限制（每个 IP 每分钟最多 5 次）
 const challengeRateLimit = new Map(); // ip -> { count, resetAt }
-const challengeFailBlacklist = new Map(); // ip -> unbanAt（连续失败3次封10分钟）
-
-function isChallengeBlacklisted(ip) {
-  const unbanAt = challengeFailBlacklist.get(ip);
-  if (!unbanAt) return false;
-  if (Date.now() > unbanAt) { challengeFailBlacklist.delete(ip); return false; }
-  return true;
-}
-
-function recordChallengeFailure(ip) {
-  const entry = challengeRateLimit.get(ip) || { count: 0, resetAt: Date.now() + 60000 };
-  entry.count++;
-  if (entry.count >= 3) {
-    challengeFailBlacklist.set(ip, Date.now() + 600000); // 封10分钟
-    challengeRateLimit.delete(ip);
-    pendingChallenge = null; // 作废当前 challenge，防止暴力猜测
-    console.log(`[Security] IP ${ip} blacklisted for 10min, challenge invalidated (3 failed attempts)`);
-  } else {
-    challengeRateLimit.set(ip, entry);
-  }
-}
 function checkChallengeRate(ip) {
   const now = Date.now();
   const entry = challengeRateLimit.get(ip) || { count: 0, resetAt: now + 60000 };
@@ -382,7 +326,7 @@ app.post('/pair/challenge', (req, res) => {
     return res.status(429).json({ error: 'Too many requests. Max 5 per minute.' });
   }
   const code = String(Math.floor(100000 + Math.random() * 900000));
-  pendingChallenge = { code, expiresAt: Date.now() + 120000 }; // 120秒有效
+  pendingChallenge = { code, expiresAt: Date.now() + 30000 };
   console.log(`[Pair] Challenge generated: ${code}`);
   res.json({ code, expiresAt: pendingChallenge.expiresAt });
 });

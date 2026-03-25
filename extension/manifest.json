@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CloudHand Chrome Bridge",
-  "version": "2.2.8",
+  "version": "2.1.0",
   "description": "云手 - 连接本地Chrome和远程AI助理，让AI控制你的浏览器",
   "permissions": [
     "tabs",
@@ -10,8 +10,7 @@
     "cookies",
     "alarms",
     "scripting",
-    "storage",
-    "sessions"
+    "storage"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -24,13 +23,5 @@
     "default_popup": "popup.html",
     "default_title": "Chrome Bridge"
   },
-  "options_page": "options.html",
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content_script.js"],
-      "run_at": "document_idle",
-      "all_frames": false
-    }
-  ]
+  "options_page": "options.html"
 }

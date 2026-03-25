@@ -5,15 +5,6 @@ let ws = null;
 let connected = false;
 let sessionToken = null;
 let serverUrl = null;
-const agentWindows = new Set(); // 扩展内部追踪 agent 窗口
-
-// 从 storage 恢复 agentWindows（service worker 重启后恢复）
-chrome.storage.local.get('agentWindowIds').then(r => {
-  (r.agentWindowIds || []).forEach(id => agentWindows.add(id));
-});
-function saveAgentWindows() {
-  chrome.storage.local.set({ agentWindowIds: [...agentWindows] });
-}
 
 import { CLOUDHAND_CONFIG } from './config.js';
 console.log('[CloudHand] CLOUDHAND_CONFIG:', typeof CLOUDHAND_CONFIG, JSON.stringify(CLOUDHAND_CONFIG));
@@ -54,12 +45,6 @@ function connect() {
         await chrome.storage.local.set({ sessionToken: msg.sessionToken });
         connected = true;
         console.log('[Bridge] Paired, session token saved');
-        return;
-      }
-      // server 请求版本号
-      if (msg.type === 'get_version') {
-        const manifest = chrome.runtime.getManifest();
-        ws.send(JSON.stringify({ type: 'version_report', version: manifest.version }));
         return;
       }
       // 收到服务端指令
@@ -244,8 +229,6 @@ async function handleCommand(command, params) {
       top: 0
     });
     await chrome.windows.update(win.id, { state: 'minimized' });
-    agentWindows.add(win.id); // 记录为 agent 窗口
-    saveAgentWindows();
     const newTab = win.tabs?.[0];
     return { windowId: win.id, tabId: newTab?.id, url: newTab?.url };
   }
@@ -455,38 +438,9 @@ async function handleCommand(command, params) {
   }
 }
 
-// ── 用户行为学习：接收 content_script 上报，转发给 server ──
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // content_script 启动时查询当前 tab 是否属于 agent 窗口
-  if (msg.type === 'is_agent_window') {
-    const windowId = sender.tab?.windowId;
-    if (windowId == null) { sendResponse({ isAgent: false }); return true; }
-    if (agentWindows.has(windowId)) {
-      sendResponse({ isAgent: true }); return true;
-    }
-    // 内存 Set 可能还未从 storage 恢复，直接查 storage 兜底
-    chrome.storage.local.get('agentWindowIds').then(r => {
-      const ids = r.agentWindowIds || [];
-      if (ids.includes(windowId)) agentWindows.add(windowId); // 顺便补回内存
-      sendResponse({ isAgent: ids.includes(windowId) });
-    });
-    return true; // 异步 sendResponse
-  }
-  if (msg.type !== 'user_actions') return;
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({
-    type: 'user_actions',
-    domain: msg.domain,
-    actions: msg.actions,
-    tabId: sender.tab?.id
-  }));
-});
-
 // ── Agent 窗口关闭感知 ──────────────────────────────────
 // 当用户手动关闭窗口时，主动通知 server 从 agentWindows 里清掉
 chrome.windows.onRemoved.addListener((windowId) => {
-  agentWindows.delete(windowId); // 从 agent 窗口集合中移除
-  saveAgentWindows();
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'window_removed', windowId }));
     console.log('[CloudHand] Window removed, notified server:', windowId);
@@ -499,32 +453,3 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
     ws.send(JSON.stringify({ type: 'tab_removed', tabId, windowId: removeInfo.windowId, isWindowClosing: removeInfo.isWindowClosing }));
   }
 });
-
-// 当 agent 窗口的 tab 完成加载时，主动注入 watcher（不依赖 content_script 的 sendMessage）
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status !== 'complete') return;
-  if (!agentWindows.has(tab.windowId)) {
-    // 兜底：查 storage.local
-    chrome.storage.local.get('agentWindowIds').then(r => {
-      const ids = r.agentWindowIds || [];
-      if (!ids.includes(tab.windowId)) return;
-      agentWindows.add(tab.windowId);
-      injectWatcher(tabId);
-    });
-    return;
-  }
-  injectWatcher(tabId);
-});
-
-function injectWatcher(tabId) {
-  chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
-      if (window.__cloudhandWatcherInjected) return;
-      window.__cloudhandWatcherInjected = true;
-      window.__cloudhandIsAgent = true; // 标记为 agent 窗口
-      // 触发 content_script 重新检查（如果已注入）
-      window.dispatchEvent(new CustomEvent('cloudhand_agent_confirmed'));
-    }
-  }).catch(() => {}); // 忽略无法注入的页面（chrome:// 等）
-}

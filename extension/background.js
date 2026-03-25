@@ -156,11 +156,11 @@ init();
 // ── 指令处理 ────────────────────────────────────────────
 
 async function getTab(tabId) {
-  if (tabId) {
-    try { return await chrome.tabs.get(tabId); } catch { return null; }
+  if (!tabId) {
+    // 铁律：禁止 fallback 到用户活动 tab，必须明确指定 tabId
+    throw new Error('tabId is required: agent must always specify tabId to avoid operating on user windows');
   }
-  const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  return tabs[0] || null;
+  try { return await chrome.tabs.get(tabId); } catch { return null; }
 }
 
 function runScript(tabId, fn, args = []) {

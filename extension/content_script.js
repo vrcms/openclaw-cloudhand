@@ -29,30 +29,54 @@
   const domain = location.hostname;
   const actions = [];
 
+  // 无意义容器标签，点击时向上找有意义的祖先
+  const SKIP_TAGS = new Set(['body', 'html', 'div', 'span', 'section', 'article', 'main', 'nav', 'header', 'footer', 'ul', 'li', 'i', 'em', 'svg', 'path']);
+
+  function getMeaningfulEl(el) {
+    let cur = el;
+    for (let i = 0; i < 6 && cur && cur !== document.body; i++) {
+      const tag = cur.tagName?.toLowerCase();
+      // 有 id、aria-label、placeholder、role、可见文字，或者是交互元素
+      if (
+        cur.id ||
+        cur.getAttribute('aria-label') ||
+        cur.getAttribute('placeholder') ||
+        cur.getAttribute('role') ||
+        ['a', 'button', 'input', 'select', 'textarea', 'label'].includes(tag) ||
+        (!SKIP_TAGS.has(tag) && cur.innerText?.trim().length > 0 && cur.innerText.trim().length < 50)
+      ) return cur;
+      cur = cur.parentElement;
+    }
+    return el; // fallback 原始元素
+  }
+
   function getSelector(el) {
     if (!el || el === document.body) return 'body';
-    if (el.id) return '#' + el.id;
-    const tag = el.tagName.toLowerCase();
-    const text = el.innerText?.trim().slice(0, 20) || '';
-    const cls = el.className?.toString().trim().split(/\s+/).slice(0, 2).join('.');
+    const tag = el.tagName?.toLowerCase() || 'unknown';
+    if (el.id) return `${tag}#${el.id}`;
+    const label = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('role');
+    if (label) return `${tag}[${label}]`;
+    const cls = el.className?.toString().trim().split(/\s+/).filter(c => c && !/^[a-z0-9]{6,}$/i.test(c)).slice(0, 2).join('.');
     return cls ? `${tag}.${cls}` : tag;
   }
 
   function getText(el) {
-    return el?.innerText?.trim().slice(0, 40) || el?.placeholder || el?.title || '';
+    return (el?.innerText?.trim() || el?.getAttribute('aria-label') || el?.placeholder || el?.title || '').slice(0, 40);
   }
 
   function record(action) {
     actions.push({ ts: Date.now(), domain, ...action });
   }
 
-  // 点击
+  // 点击（向上找有意义的祖先元素，避免记录 i/span 等无意义标签）
   document.addEventListener('click', (e) => {
-    const el = e.target;
+    const el = getMeaningfulEl(e.target);
+    if (!el || el === document.body || el === document.documentElement) return; // 过滤顶层
+    const text = getText(el);
     record({
       type: 'click',
       selector: getSelector(el),
-      text: getText(el),
+      text: text,
       tag: el.tagName?.toLowerCase()
     });
   }, true);

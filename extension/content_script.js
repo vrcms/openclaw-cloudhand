@@ -40,7 +40,8 @@
   const actions = [];
 
   // 无意义容器标签，点击时向上找有意义的祖先
-  const SKIP_TAGS = new Set(['body', 'html', 'div', 'span', 'section', 'article', 'main', 'nav', 'header', 'footer', 'ul', 'li', 'i', 'em', 'svg', 'path']);
+  const SKIP_TAGS = new Set(['body', 'html', 'section', 'article', 'main', 'nav', 'header', 'footer', 'ul', 'li', 'i', 'em', 'svg', 'path']);
+  // div/span 不在 SKIP_TAGS，但通过 innerText 长度限制过滤大容器
 
   function getMeaningfulEl(el) {
     let cur = el;
@@ -53,7 +54,7 @@
         cur.getAttribute('placeholder') ||
         cur.getAttribute('role') ||
         ['a', 'button', 'input', 'select', 'textarea', 'label'].includes(tag) ||
-        (!SKIP_TAGS.has(tag) && cur.innerText?.trim().length > 0 && cur.innerText.trim().length < 50)
+        (!SKIP_TAGS.has(tag) && cur.innerText?.trim().length > 0 && cur.innerText.trim().length < 80)
       ) return cur;
       cur = cur.parentElement;
     }

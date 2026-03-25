@@ -382,8 +382,18 @@ async function handleCommand(command, params) {
 
     case 'new_window': {
       const url = params.url || 'about:blank';
-      // focused: false 让新窗口在后台打开，不抢焦点
-      const win = await chrome.windows.create({ url, focused: false, type: 'normal' });
+      // 创建 1920x1080 窗口，确保桌面布局渲染，然后立刻最小化，不抢焦点
+      const win = await chrome.windows.create({
+        url,
+        focused: false,
+        type: 'normal',
+        width: 1920,
+        height: 1080,
+        left: 0,
+        top: 0
+      });
+      // 立刻最小化，放到任务栏，不影响用户工作区
+      await chrome.windows.update(win.id, { state: 'minimized' });
       const newTab = win.tabs?.[0];
       return { windowId: win.id, tabId: newTab?.id, url: newTab?.url };
     }

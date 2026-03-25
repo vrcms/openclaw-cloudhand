@@ -499,3 +499,32 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
     ws.send(JSON.stringify({ type: 'tab_removed', tabId, windowId: removeInfo.windowId, isWindowClosing: removeInfo.isWindowClosing }));
   }
 });
+
+// 当 agent 窗口的 tab 完成加载时，主动注入 watcher（不依赖 content_script 的 sendMessage）
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'complete') return;
+  if (!agentWindows.has(tab.windowId)) {
+    // 兜底：查 storage.local
+    chrome.storage.local.get('agentWindowIds').then(r => {
+      const ids = r.agentWindowIds || [];
+      if (!ids.includes(tab.windowId)) return;
+      agentWindows.add(tab.windowId);
+      injectWatcher(tabId);
+    });
+    return;
+  }
+  injectWatcher(tabId);
+});
+
+function injectWatcher(tabId) {
+  chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      if (window.__cloudhandWatcherInjected) return;
+      window.__cloudhandWatcherInjected = true;
+      window.__cloudhandIsAgent = true; // 标记为 agent 窗口
+      // 触发 content_script 重新检查（如果已注入）
+      window.dispatchEvent(new CustomEvent('cloudhand_agent_confirmed'));
+    }
+  }).catch(() => {}); // 忽略无法注入的页面（chrome:// 等）
+}

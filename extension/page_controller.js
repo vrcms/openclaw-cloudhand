@@ -142,6 +142,18 @@
           sendResponse({ ok: true, loaded: true, url: location.href });
           break;
 
+        case 'debug_dom': {
+          if (typeof window.__domTree !== 'function') {
+            sendResponse({ ok: false, error: 'dom_tree not loaded' });
+            break;
+          }
+          const r = window.__domTree({ doHighlightElements: false, viewportExpansion: -1, debugMode: false, interactiveBlacklist: [], interactiveWhitelist: [], highlightOpacity: 0.1, highlightLabelOpacity: 0.5 });
+          const mapKeys = Object.keys(r.map || {});
+          const sample = mapKeys.slice(0, 3).map(k => ({ key: k, isInteractive: r.map[k].isInteractive, hasEl: !!r.map[k].element, tag: r.map[k].element?.tagName }));
+          sendResponse({ ok: true, rootId: r.rootId, mapSize: mapKeys.length, sample });
+          break;
+        }
+
         default:
           sendResponse({ ok: false, error: `unknown action: ${action}` });
       }

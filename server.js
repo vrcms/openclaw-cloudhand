@@ -605,6 +605,19 @@ async function handleSnapshot(req, res) {
   app.post('/' + cmd, route(cmd));
 });
 
+// ── 调试日志收集 ───────────────────────────────────────────
+const debugLogs = [];
+app.post('/log', (req, res) => {
+  const entry = { ts: new Date().toISOString(), ...req.body };
+  debugLogs.push(entry);
+  if (debugLogs.length > 200) debugLogs.shift();
+  console.log('[DBG]', JSON.stringify(entry));
+  res.json({ ok: true });
+});
+app.get('/log', (req, res) => {
+  res.json({ logs: debugLogs });
+});
+
 // ── 启动 ────────────────────────────────────────────────
 server.listen(PORT, HOST, () => {
   console.log(`Chrome Bridge Server running on http://${HOST}:${PORT}`);

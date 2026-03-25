@@ -18,6 +18,12 @@ function saveAgentWindows() {
 import { CLOUDHAND_CONFIG } from './config.js';
 console.log('[CloudHand] CLOUDHAND_CONFIG:', typeof CLOUDHAND_CONFIG, JSON.stringify(CLOUDHAND_CONFIG));
 const DEFAULT_SERVER = CLOUDHAND_CONFIG.wsUrl;
+
+function dbg(msg, data={}) {
+  const url = DEFAULT_SERVER.replace('ws://', 'http://').replace('/ws', '/log');
+  fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({src:'bg', msg, ...data}) }).catch(()=>{});
+  console.log('[DBG-BG]', msg, data);
+}
 console.log('[CloudHand] DEFAULT_SERVER:', DEFAULT_SERVER);
 
 // 启动时从 storage 读取配置并连接
@@ -477,6 +483,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true; // 异步 sendResponse
   }
+  if (msg.type === 'cs_dbg') {
+    dbg('cs: ' + msg.msg, { url: msg.url, tabId: sender.tab?.id });
+    return;
+  }
   if (msg.type !== 'user_actions') return;
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({
@@ -522,13 +532,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 function injectWatcher(tabId) {
-  // 注入完整 content_script 到 ISOLATED world（与 content_script 同一 world）
-  // 如果已注入过（有 __cloudhandWatcher），会被 IIFE 开头的 guard 拦住，不会重复
+  dbg('injectWatcher called', { tabId });
   chrome.scripting.executeScript({
     target: { tabId },
     files: ['content_script.js']
   }).then(() => {
-    // 注入后在 ISOLATED world 设标记并调用 tryStart
+    dbg('content_script injected ok', { tabId });
     chrome.scripting.executeScript({
       target: { tabId },
       world: 'ISOLATED',
@@ -536,11 +545,12 @@ function injectWatcher(tabId) {
         window.__cloudhandIsAgent = true;
         if (typeof window.__cloudhandTryStart === 'function') {
           window.__cloudhandTryStart();
+          window.__cloudhandDbgTryStartCalled = true;
         }
       }
-    }).catch(() => {});
-  }).catch(() => {
-    // 注入失败时直接设标记（可能已注入）
+    }).catch(e => { /* ignore */ });
+  }).catch(e => {
+    dbg('content_script inject failed, trying direct flag', { tabId, err: e?.message });
     chrome.scripting.executeScript({
       target: { tabId },
       world: 'ISOLATED',

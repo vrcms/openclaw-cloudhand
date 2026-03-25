@@ -439,7 +439,13 @@ async function handleCommand(command, params) {
 }
 
 // ── 用户行为学习：接收 content_script 上报，转发给 server ──
-chrome.runtime.onMessage.addListener((msg, sender) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // content_script 启动时查询当前 tab 是否属于 agent 窗口
+  if (msg.type === 'is_agent_window') {
+    const windowId = sender.tab?.windowId;
+    sendResponse({ isAgent: windowId != null && agentWindows.has(windowId) });
+    return true;
+  }
   if (msg.type !== 'user_actions') return;
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({

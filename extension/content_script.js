@@ -3,6 +3,14 @@
 
 (function() {
   if (window.__cloudhandWatcher) return; // 防重复注入
+
+  // 先确认当前 tab 是否属于 agent 窗口，不是则静默退出
+  chrome.runtime.sendMessage({ type: 'is_agent_window' }, (resp) => {
+    if (!resp || !resp.isAgent) return; // 不是 agent 窗口，不监听
+    startWatcher();
+  });
+
+  function startWatcher() {
   window.__cloudhandWatcher = true;
 
   const domain = location.hostname;
@@ -77,5 +85,7 @@
     const batch = actions.splice(0, actions.length);
     chrome.runtime.sendMessage({ type: 'user_actions', domain, actions: batch });
   }, 10000);
+
+  } // end startWatcher
 
 })();

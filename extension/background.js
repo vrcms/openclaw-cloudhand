@@ -525,11 +525,11 @@ function injectWatcher(tabId) {
   chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
-      if (window.__cloudhandWatcherInjected) return;
-      window.__cloudhandWatcherInjected = true;
-      window.__cloudhandIsAgent = true; // 标记为 agent 窗口
-      // 触发 content_script 重新检查（如果已注入）
-      window.dispatchEvent(new CustomEvent('cloudhand_agent_confirmed'));
+      window.__cloudhandIsAgent = true;
+      // 如果 content_script 已注入且暴露了 __cloudhandTryStart，直接调用
+      if (typeof window.__cloudhandTryStart === 'function') {
+        window.__cloudhandTryStart();
+      }
     }
-  }).catch(() => {}); // 忽略无法注入的页面（chrome:// 等）
+  }).catch(() => {});
 }

@@ -15,6 +15,8 @@
     _started = true;
     startWatcher();
   }
+  // 暴露给 injectWatcher 直接调用
+  window.__cloudhandTryStart = tryStart;
 
   // 立即检查一次（injectWatcher 可能在 content_script 之前已注入）
   if (window.__cloudhandIsAgent) { tryStart(); return; }

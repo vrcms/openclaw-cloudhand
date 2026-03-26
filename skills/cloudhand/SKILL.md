@@ -32,7 +32,7 @@ description: |
 ## 🧹 Tab 清理规则（必须遵守）
 
 - **每次任务完成后，关闭所有我打开的非活跃 tab**，只保留最后一个
-- **只关 agent 窗口（`/agent_windows` 返回的 windowId）下的 tab**，东哥其他窗口绝对不动
+- **只关 agent 窗口（`/agent_windows` 返回的 windowId）下的 tab**，用户其他窗口绝对不动
 - 关闭方法：`POST /close_tab {tabId: id}`
 - 判断标准：`active: false` 且在 agent 窗口下 → 关闭
 
@@ -343,7 +343,7 @@ curl -s -X POST http://127.0.0.1:9876/key \
 
 ### 7. 截图保存
 ```bash
-# 截图保存到文件（⚠️ 只在东哥明确说「截图」时才截！）
+# 截图保存到文件（⚠️ 只在用户明确说「截图」时才截！）
 curl -s -X POST http://127.0.0.1:9876/screenshot \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $APITOKEN" \
@@ -435,11 +435,11 @@ curl -s -X POST http://127.0.0.1:9876/new_tab \
   -H "Authorization: Bearer $APITOKEN" \
   -d "{\"windowId\":$AGENT_WINDOW_ID}"
 
-# 关闭所有我的窗口（东哥要求时）
+# 关闭所有我的窗口（用户要求时）
 curl -s -X POST http://127.0.0.1:9876/agent_windows/close_all
 ```
 
-**例外**：东哥明确说「开新窗口」时才用 `new_window`。
+**例外**：用户明确说「开新窗口」时才用 `new_window`。
 
 ## 标准操作前置脚本（必用，替代硬编码 windowId）
 

@@ -505,6 +505,38 @@ app.get('/tabs', async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// /ensure_tab：确保有一个可用的 agent tab，返回 tabId
+// 逻辑：找已有 agent 窗口 → 找其中可用 tab → 没有则 new_tab（不开新窗口）
+// 比特浏览器下 new_tab 返回 bitbrowser:// 没关系，navigate 后再调一次即可
+app.post('/ensure_tab', async (req, res) => {
+  try {
+    // 1. 检查已有 agent 窗口
+    const tabs = await sendCommand('tabs', {});
+    const agentWinIds = Array.from(agentWindows);
+    const agentTabs = tabs.filter(t => agentWinIds.includes(t.windowId));
+    // 2. 找一个非 bitbrowser:// 且有效的 tab
+    const usable = agentTabs.find(t => t.url && !t.url.startsWith('bitbrowser') && !t.url.startsWith('chrome://'));
+    if (usable) {
+      currentAgentTabId = usable.id;
+      return res.json({ ok: true, tabId: usable.id, windowId: usable.windowId, url: usable.url, reused: true });
+    }
+    // 3. 有 agent 窗口但没有可用 tab → 只开新 tab，不开新窗口
+    if (agentWinIds.length > 0) {
+      const winId = agentWinIds[0];
+      const newTab = await sendCommand('new_tab', { windowId: winId });
+      const tabId = newTab.tabId;
+      currentAgentTabId = tabId;
+      agentWindows.add(winId);
+      return res.json({ ok: true, tabId, windowId: winId, url: '', reused: false, note: 'new_tab in existing window' });
+    }
+    // 4. 完全没有 agent 窗口 → 只此一次开新窗口
+    const win = await sendCommand('new_window', { focused: false });
+    agentWindows.add(win.windowId);
+    currentAgentTabId = win.tabId;
+    return res.json({ ok: true, tabId: win.tabId, windowId: win.windowId, url: '', reused: false, note: 'new_window (first time only)' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/page_info', route('page_info'));
 
 // 页面快照：返回紧凑 JSON（url/title/interactive元素列表），供 AI 直接读取操作

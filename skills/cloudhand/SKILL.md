@@ -301,6 +301,39 @@ requests.post('http://127.0.0.1:9876/eval', headers=H, json={'tabId': tid, 'expr
 
 ---
 
+## 🎯 smart_locate（语义定位，推荐优先使用）
+
+**v2.4.5+ 新功能**：用自然语言描述意图，自动找到最匹配的元素并返回 browser_state 索引，无需扫描全部元素。
+
+```python
+# 语义定位：找搜索框
+r = requests.post('http://127.0.0.1:9876/smart_locate', headers=H, json={
+    'tabId': tid,
+    'intent': '搜索'  # 支持：搜索 / 按钮 / 登录 / 输入 / 链接 / 空字符串(返回所有关键元素)
+}).json()
+
+for m in r['matches']:
+    idx = m.get('browserStateIndex')  # 可直接用于 click_element / input_text_element
+    print(f"[{idx}] {m['type']} | {m.get('placeholder') or m.get('text') or m.get('id')}")
+
+# 拿到索引直接点击/输入
+requests.post('http://127.0.0.1:9876/input_text_element', headers=H,
+    json={'tabId': tid, 'index': r['matches'][0]['browserStateIndex'], 'text': '关键词'})
+```
+
+**支持的 intent：**
+- `搜索` / `search` → 找搜索框（input）
+- `按钮` / `button` → 找主要按钮
+- `登录` / `login` → 找登录相关元素
+- `输入` / `input` → 找所有输入框
+- `链接` / `link` → 找主要导航链接
+- `内容` / `content` → 找主内容区域
+- `''`（空字符串）→ 返回所有关键元素概览
+
+**比 get_browser_state 快的原因：** 不返回 500 个元素，只返回最匹配的 5 个，AI 无需扫描。
+
+---
+
 ## 标准流程（可直接复用的 curl 命令）
 
 ### 1. 检查连接

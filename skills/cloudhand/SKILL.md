@@ -9,6 +9,43 @@ description: |
 
 # CloudHand - 控制本地 Chrome
 
+## ⚡ 第一步：检查连接状态（每次使用前必做）
+
+**在执行任何浏览器操作之前**，必须先检查 bridge 是否已连接，扩展是否配对：
+
+```python
+import requests
+status = requests.get('http://127.0.0.1:9876/status').json()
+paired = status.get('paired', False)
+connected = status.get('extensionConnected', False)
+```
+
+### 未连接时的处理流程
+
+| 状态 | 原因 | 处理方式 |
+|------|------|----------|
+| `extensionConnected: false` | Chrome 扩展未安装或未连接 | 提示用户安装/重新配对 |
+| `paired: false` | 扩展已连接但未配对 | 生成配对码，指引用户配对 |
+| `paired: true` | ✅ 正常，可以操作 | 直接执行任务 |
+
+**未连接时必须告知用户，不要静默失败：**
+
+```python
+if not connected:
+    # 直接告诉用户
+    print("⚠️ 尚未连接你的 Chrome 浏览器，还无法操作网页。")
+    print("请先安装 CloudHand 扩展并配对：")
+    print("1. 让我生成下载链接安装扩展")
+    print("2. 输入配对码完成配对")
+elif not paired:
+    print("⚠️ 扩展已连接但未配对，请生成配对码完成配对。")
+    # 自动生成配对码
+    pair_r = requests.post('http://127.0.0.1:9876/pair/challenge').json()
+    print(f"配对码：{pair_r.get('code')}（120秒有效）")
+```
+
+---
+
 ## 安装后步骤
 
 安装完成并验证 bridge 正常运行后：

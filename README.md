@@ -2,7 +2,7 @@
 
 > Control your local Chrome browser from a remote OpenClaw AI agent.
 
-[![Version](https://img.shields.io/badge/version-2.1.0-blue.svg)](https://github.com/vrcms/openclaw-cloudhand)
+[![Version](https://img.shields.io/badge/version-2.4.6-blue.svg)](https://github.com/vrcms/openclaw-cloudhand)
 [![OpenClaw Plugin](https://img.shields.io/badge/openclaw-plugin-orange.svg)](https://openclaw.ai)
 
 English | **[中文文档](README.zh.md)**
@@ -12,10 +12,11 @@ English | **[中文文档](README.zh.md)**
 CloudHand is an OpenClaw plugin that bridges your remote AI agent (running on a VPS) to your local Chrome browser. It lets the AI:
 
 - Navigate to any URL
-- Take screenshots
 - Click elements, type text, press keys
 - Execute arbitrary JavaScript (`eval`)
-- Read page content and find elements
+- Read page content with DOM tree (`get_browser_state`)
+- **Smart element location** (`smart_locate`) — find elements by intent, no full DOM scan
+- **Ensure usable tab** (`ensure_tab`) — safely get a workable tab without opening extra windows
 - Control tabs, scroll, go back/forward
 
 This is especially useful when you need the AI to access websites that require login, bypass anti-bot measures, or interact with complex web UIs.
@@ -58,82 +59,103 @@ This will:
 
    Ask the agent: "给我云手的下载链接" ("Give me the CloudHand download link")
 
-   The agent will generate a one-time link valid for **60 seconds**:
+   The agent will generate a one-time link valid for **120 seconds**:
    ```
    http://YOUR_VPS_IP:9876/download-ext?t=<token>
    ```
-   > ⚠️ The link expires in 60 seconds. Download immediately.
+   > ⚠️ The link expires in 120 seconds. Download immediately.
 
 2. Unzip and load in Chrome:
    - Open `chrome://extensions/`
    - Enable **Developer mode**
    - Click **Load unpacked** → select the `extension/` folder
-   - (The extension is pre-configured with your VPS IP — no manual setup needed)
+   - (The extension includes `config.js` with your VPS IP pre-configured)
 
-3. **Pair with the AI agent:**
+3. **Pair with your AI agent:**
 
-   Ask the agent: "生成配对码" ("Generate pairing code")
+   Ask the agent: "给我云手的配对码" ("Give me the pairing code")
 
-   The agent will reply with a **6-digit code** valid for **30 seconds**.
+   A 6-digit code will appear, valid for **120 seconds**. Enter it in the extension popup.
 
-   - Click the CloudHand icon in Chrome toolbar
-   - Enter the 6-digit pairing code
-   - Click **Pair**
+## Key Features
 
-   ✅ Done! The agent can now control your browser.
+### DOM Tree Navigation
 
-   > 💡 Pairing persists across browser restarts. You only need to pair once (unless you reinstall the extension).
+Get a structured, interactive element tree of the current page:
 
-4. Tell your AI: "帮我连接浏览器" (or "pair cloudhand")
-   - The AI will generate a 6-digit code
-   - Enter the code in the extension popup
+```python
+# Get browser state (interactive elements with indices)
+state = requests.post('http://VPS:9876/get_browser_state', headers=H, json={'tabId': tid}).json()
+# Returns: [1]<button>Search</button>  [2]<input placeholder="keyword">
 
-## Available AI Tools
+# Click by index
+requests.post('http://VPS:9876/click_element', headers=H, json={'tabId': tid, 'index': 2})
 
-| Tool | Description |
-|------|-------------|
-| `cloudhand_status` | Check connection status |
-| `cloudhand_pair` | Generate pairing code |
-| `cloudhand_tabs` | List all open tabs |
-| `cloudhand_navigate` | Navigate to a URL |
-| `cloudhand_screenshot` | Take a screenshot (returns file path + base64) |
-| `cloudhand_click` | Click an element (by selector or text) |
-| `cloudhand_type` | Type text into an element |
-| `cloudhand_key` | Press a key (Enter, Tab, Escape, etc.) |
-| `cloudhand_find` | Find elements by CSS selector |
-| `cloudhand_get_text` | Get page text content |
-| `cloudhand_scroll` | Scroll the page |
-| `cloudhand_eval` | Execute arbitrary JavaScript (uses chrome.debugger, bypasses CSP) |
-| `cloudhand_go_back` | Navigate back |
-| `cloudhand_go_forward` | Navigate forward |
-| `cloudhand_page_info` | Get current page title and URL |
-
-## Plugin Config
-
-In your OpenClaw config (`~/.openclaw/openclaw.json`):
-
-```json
-{
-  "plugins": {
-    "entries": {
-      "cloudhand": {
-        "enabled": true,
-        "config": {
-          "port": 9876,
-          "autoStart": true
-        }
-      }
-    }
-  }
-}
+# Type by index
+requests.post('http://VPS:9876/input_text_element', headers=H, json={'tabId': tid, 'index': 2, 'text': 'openclaw'})
 ```
+
+### Smart Locate (v2.4.5+)
+
+Find elements by natural language intent — no full DOM scan needed:
+
+```python
+# Find search box
+r = requests.post('http://VPS:9876/smart_locate', headers=H, json={
+    'tabId': tid,
+    'intent': '搜索'  # or: 按钮 / 登录 / 输入 / 链接 / 内容 / '' (all key elements)
+}).json()
+idx = r['matches'][0]['browserStateIndex']  # Use directly with click_element
+```
+
+Supported intents: `搜索/search`, `按钮/button`, `登录/login`, `输入/input`, `链接/link`, `内容/content`, `''` (overview)
+
+### Ensure Tab (v2.4.6+)
+
+Safely get a usable agent tab — works with BitBrowser and other non-standard environments:
+
+```python
+# Always use this instead of new_tab/new_window
+r = requests.post('http://VPS:9876/ensure_tab', headers=H, json={}).json()
+tid = r['tabId']  # Guaranteed to be a usable tab
+# If it's a browser internal page, navigate first then reuse this tid
+```
+
+Logic: reuse existing agent tab → open new tab in existing window → only create new window if no agent window exists.
+
+## API Reference
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/status` | GET | Bridge status (paired, version, tabId) |
+| `/pair/challenge` | POST | Generate 6-digit pairing code (120s) |
+| `/agent_windows` | GET | List agent-owned window IDs |
+| `/ensure_tab` | POST | Get/create a usable agent tab |
+| `/tabs` | GET | List all open tabs |
+| `/navigate` | POST | Navigate to URL |
+| `/eval` | POST | Execute JavaScript |
+| `/get_browser_state` | POST | Get DOM tree with interactive element indices |
+| `/click_element` | POST | Click element by DOM index |
+| `/input_text_element` | POST | Type into element by DOM index |
+| `/smart_locate` | POST | Find elements by natural language intent |
+| `/click` | POST | Click by CSS selector |
+| `/type` | POST | Type text into element |
+| `/scroll` | POST | Scroll page |
+| `/go_back` | POST | Navigate back |
+| `/go_forward` | POST | Navigate forward |
+| `/page_info` | GET | Current page title and URL |
+| `/focus_tab` | POST | Focus a specific tab |
+| `/close_tab` | POST | Close a tab |
+| `/new_tab` | POST | Open new tab in window |
+| `/download-ext` | GET | One-time extension download (token required) |
 
 ## Security
 
-- **Pairing codes** are 6-digit, expire in 30 seconds, single-use
+- **Pairing codes** are 6-digit, expire in **120 seconds**, single-use, rate-limited
+- **Download links** are one-time tokens, expire in **120 seconds**
 - **Session tokens** are 128-bit random, stored in Chrome extension storage
-- **All WebSocket connections** require a valid session token
-- The bridge server listens on `0.0.0.0:9876` — consider firewall rules if needed
+- **Agent isolation**: the extension only tracks agent-created windows; user windows are never recorded
+- Bearer token authentication on all API calls
 
 ## Development
 

@@ -69,43 +69,46 @@ cat /root/.openclaw/workspace/browser-knowledge/_common.md
 
 **判断条件**：`browser-knowledge/<domain>.md` 不存在，即为首次访问。
 
-首次访问时，用以下 JS 提取页面结构，再用 AI 语言总结写入经验文件：
+首次访问时，用 `get_browser_state` 读取 UI 树，观察元素列表，总结写入经验文件：
 
-```javascript
-// 提取可见叶节点（有文字内容的末端元素）
-JSON.stringify(
-  [...document.querySelectorAll('*')]
-    .filter(el => el.children.length === 0 && el.innerText.trim().length > 3)
-    .map(el => {
-      const r = el.getBoundingClientRect();
-      return {tag: el.tagName.toLowerCase(), text: el.innerText.trim().slice(0,60),
-              cls: el.className.toString().slice(0,60), attr: el.getAttribute('data-e2e')||"",
-              x: Math.round(r.x), y: Math.round(r.y)};
-    })
-    .filter(el => el.y >= 0 && el.y < window.innerHeight * 2)
-    .slice(0, 150)
-)
+```python
+# 1. navigate 后等页面加载
+time.sleep(3)
+
+# 2. 读取 UI 树，观察所有可交互元素
+state = requests.post('http://127.0.0.1:9876/get_browser_state', headers=H, json={'tabId': tid}).json()
+print('elementCount:', state['result']['elementCount'])
+print(state['result']['content'])  # AI 观察并总结
 ```
 
-**经验文件必须包含以下四类信息：**
+**观察重点（从 UI 树中提取）：**
+- **搜索框**：找 `<input placeholder="...">` 类元素，记录 placeholder 文字和索引规律
+- **主要按钮**：登录/注册/筛选/排序按钮的文字
+- **内容区元素**：内容型元素（`<a>`链接、文章标题）从第几个索引开始
+- **元素总数**：正常加载后大约多少个元素（elementCount 为 0 说明需要更长等待时间）
+
+**必须记录的四类信息：**
 
 ```markdown
 # <domain> 经验
 
-## 主内容选择器
-- 正文：`<selector>`
-- 列表（feed流/搜索结果）：`<selector>`
-- 评论：`<selector>`
-- 搜索框：`<selector>`
+## **加载节奏**
+- navigate 后需等 N 秒，get_browser_state 才返回有效元素（elementCount > 0）
+- 是否需要滚动才能加载更多内容
 
-## 操作路径
-- 搜索：步骤描述
-- 翻页/加载更多：步骤描述
-- 进入详情：步骤描述
+## **关键功能入口**（UI树中的元素特征）
+- 搜索框：placeholder="XXX"，通常在索引 [N] 附近
+- 登录/主操作按钮：文字为「XXX」
+- 内容列表：从索引 [N] 开始是文章/视频链接
 
-## 注意事项
+## **click_element 注意事项**
+- 哪些元素直接点击有效
+- 哪些需要 eval 完整鼠标事件链（如 React Select 下拉）
+- 哪些操作是二步骤（先展开再点子项，展开后需重新调 get_browser_state）
+
+## **其他注意事项**
 - 是否需要登录
-- 是否懒加载（需滚动）
+- 是否懒加载（需滚动后再读 UI 树）
 - 有无反爬/验证码
 ```
 

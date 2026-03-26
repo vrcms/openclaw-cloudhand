@@ -293,7 +293,7 @@ requests.post('http://127.0.0.1:9876/eval', headers=H, json={'tabId': tid, 'expr
 ### ⚠️ 注意事项
 - `get_browser_state` 每次调用都会重新扫描 DOM，索引会变化，点击前必须重新获取
 - 如果 `elementCount: 0`，说明 page_controller 未注入，用 `ping_page_controller` 检查
-- **React Select 下拉**：直接构造 URL 参数是备选方案（更可靠），如 `filter_period=day`
+- **React Select 下拉**：必须用完整鼠标事件链展开（见上方代码），不要绕道 URL 参数
 - **对话式操作**：读状态 → AI 决策 → 点击/输入 → 再读状态 → 循环，完全模拟人操作
 
 ---
@@ -341,38 +341,21 @@ curl -s -X POST http://127.0.0.1:9876/key \
   -d '{"key":"Enter"}'
 ```
 
-### 7. 截图并发送（飞书渠道）
+### 7. 截图保存
 ```bash
-# 截图保存到文件
+# 截图保存到文件（⚠️ 只在东哥明确说「截图」时才截！）
 curl -s -X POST http://127.0.0.1:9876/screenshot \
   -H 'Content-Type: application/json' \
-  -d '{}' | python3 -c "
+  -H "Authorization: Bearer $APITOKEN" \
+  -d '{"tabId": <tabId>}' | python3 -c "
 import sys, json, base64
 obj = json.loads(sys.stdin.read())
 b64 = obj['result'].split(',')[1]
 with open('/tmp/cloudhand_shot.png','wb') as f:
     f.write(base64.b64decode(b64))
-print('saved')
+print('saved to /tmp/cloudhand_shot.png')
 "
-
-# 获取 tenant_access_token
-APP_ID=$(cat ~/.openclaw/openclaw.json | python3 -c "import sys,json; print(json.load(sys.stdin)['channels']['feishu']['appId'])")
-APP_SECRET=$(cat ~/.openclaw/openclaw.json | python3 -c "import sys,json; print(json.load(sys.stdin)['channels']['feishu']['appSecret'])")
-TOKEN=$(curl -s -X POST 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal' \
-  -H 'Content-Type: application/json' \
-  -d "{\"app_id\":\"$APP_ID\",\"app_secret\":\"$APP_SECRET\"}" | python3 -c "import sys,json; print(json.load(sys.stdin)['tenant_access_token'])")
-
-# 上传图片
-IMAGE_KEY=$(curl -s -X POST 'https://open.feishu.cn/open-apis/im/v1/images' \
-  -H "Authorization: Bearer $TOKEN" \
-  -F 'image_type=message' \
-  -F 'image=@/tmp/cloudhand_shot.png' | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['image_key'])")
-
-# 发送图片消息
-curl -s -X POST 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id' \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d "{\"receive_id\":\"<用户 open_id>\",\"msg_type\":\"image\",\"content\":\"{\\\"image_key\\\":\\\"$IMAGE_KEY\\\"}\"}" 
+# 截图后通过 OpenClaw 当前对话渠道发给用户（不要硬编码渠道或用户ID）
 ```
 
 ### 8. 执行 JS（找不到元素时用）
@@ -429,30 +412,6 @@ sleep 2
 | 页面未加载完 | `sleep 2` 后再操作 |
 | 截图空白 | 重试一次 |
 | `Unknown command` | 检查端点名是否正确，参考上方端点表 |
-
-## 窗口管理策略（重要）
-
-**原则：我有一个专属窗口，所有任务在里面开新 tab，不新开窗口。**
-
-```bash
-# 查看我管理的窗口
-curl -s http://127.0.0.1:9876/agent_windows
-
-# 如果 windowIds 为空，先开一个专属窗口（只做一次）
-curl -s -X POST http://127.0.0.1:9876/new_window -H 'Content-Type: application/json' -d '{}'
-# 记录返回的 windowId 到 TOOLS.md
-
-# 每次新任务：在专属窗口开新 tab（不要 new_window！）
-AGENT_WINDOW_ID=$(curl -s http://127.0.0.1:9876/agent_windows | python3 -c "import sys,json; ids=json.load(sys.stdin)['windowIds']; print(ids[0] if ids else '')")
-curl -s -X POST http://127.0.0.1:9876/new_tab \
-  -H 'Content-Type: application/json' \
-  -d "{\"windowId\":$AGENT_WINDOW_ID}"
-
-# 关闭所有我的窗口（东哥要求时）
-curl -s -X POST http://127.0.0.1:9876/agent_windows/close_all
-```
-
-**例外**：东哥明确说「开新窗口」时才用 `new_window`。
 
 ## 🛡️ 窗口管理铁律（必须遵守）
 

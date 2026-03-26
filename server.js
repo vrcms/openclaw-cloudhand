@@ -556,6 +556,95 @@ async function handleSnapshot(req, res) {
   app.post('/' + cmd, route(cmd));
 });
 
+// ── smart_locate：语义定位元素，融合 eval + browser_state 索引 ──
+app.post('/smart_locate', async (req, res) => {
+  try {
+    const tabId = req.body && req.body.tabId ? parseInt(req.body.tabId) : undefined;
+    if (!tabId) return res.status(400).json({ error: 'tabId is required' });
+    const intent = (req.body.intent || '').toLowerCase();
+
+    // Step 1: eval 语义扫描，按 intent 归类
+    const evalScript = `(function(){
+      var inputs = [...document.querySelectorAll('input,textarea,search')]
+        .filter(e=>e.offsetParent!==null)
+        .map(e=>({tag:'input',placeholder:e.placeholder,type:e.type,id:e.id,name:e.name,
+          dataE2e:e.dataset.e2e||null,rect:e.getBoundingClientRect()}));
+      var buttons = [...document.querySelectorAll('button,[role=button],[type=submit]')]
+        .filter(e=>e.offsetParent!==null && (e.innerText||'').trim())
+        .map(e=>({tag:'button',text:(e.innerText||'').trim().slice(0,40),id:e.id,
+          dataE2e:e.dataset.e2e||null,rect:e.getBoundingClientRect()}));
+      var links = [...document.querySelectorAll('nav a,header a,[role=navigation] a')]
+        .filter(e=>e.offsetParent!==null && (e.innerText||'').trim())
+        .map(e=>({tag:'a',text:(e.innerText||'').trim().slice(0,30),href:(e.href||'').slice(0,80)}));
+      var content = [...document.querySelectorAll('article,main,[role=main],[class*=content],[class*=article],[class*=feed]')]
+        .filter(e=>e.offsetParent!==null)
+        .map(e=>({tag:e.tagName.toLowerCase(),id:e.id,cls:e.className.slice(0,60)}));
+      var comments = [...document.querySelectorAll('[class*=comment],[data-e2e*=comment],[id*=comment]')]
+        .filter(e=>e.offsetParent!==null)
+        .map(e=>({tag:e.tagName.toLowerCase(),id:e.id,dataE2e:e.dataset.e2e||null,cls:e.className.slice(0,60)}));
+      return JSON.stringify({inputs:inputs.slice(0,8),buttons:buttons.slice(0,12),
+        links:links.slice(0,10),content:content.slice(0,5),comments:comments.slice(0,5)});
+    })()`;
+    const evalResult = await sendCommand('eval', { tabId, expression: evalScript });
+    const semantic = typeof evalResult === 'string' ? JSON.parse(evalResult) : evalResult;
+
+    // Step 2: 获取 browser_state 拿索引
+    const stateResult = await sendCommand('get_browser_state', { tabId });
+    const stateContent = (stateResult && stateResult.content) ? stateResult.content : '';
+
+    // Step 3: 根据 intent 匹配最佳元素，并在 browser_state 里找对应索引
+    function findIndex(text, placeholder) {
+      const lines = stateContent.split('\n');
+      for (const line of lines) {
+        if (text && line.toLowerCase().includes(text.toLowerCase())) {
+          const m = line.match(/^\[(\d+)\]/);
+          if (m) return parseInt(m[1]);
+        }
+        if (placeholder && line.toLowerCase().includes(placeholder.toLowerCase())) {
+          const m = line.match(/^\[(\d+)\]/);
+          if (m) return parseInt(m[1]);
+        }
+      }
+      return null;
+    }
+
+    let matches = [];
+    if (intent.includes('搜索') || intent.includes('search') || intent.includes('输入')) {
+      for (const inp of semantic.inputs) {
+        const idx = findIndex(inp.text, inp.placeholder);
+        matches.push({ type: 'input', placeholder: inp.placeholder, id: inp.id,
+          dataE2e: inp.dataE2e, browserStateIndex: idx, confidence: inp.placeholder ? 'high' : 'medium' });
+      }
+    } else if (intent.includes('评论') || intent.includes('comment')) {
+      for (const c of semantic.comments) {
+        const idx = findIndex(c.dataE2e || c.cls.split(' ')[0]);
+        matches.push({ type: 'comment', id: c.id, dataE2e: c.dataE2e, cls: c.cls,
+          browserStateIndex: idx, confidence: c.dataE2e ? 'high' : 'low' });
+      }
+    } else if (intent.includes('内容') || intent.includes('文章') || intent.includes('content')) {
+      for (const c of semantic.content) {
+        matches.push({ type: 'content', tag: c.tag, id: c.id, cls: c.cls,
+          browserStateIndex: null, confidence: c.id ? 'high' : 'medium' });
+      }
+    } else if (intent.includes('按钮') || intent.includes('button') || intent.includes('点击')) {
+      for (const b of semantic.buttons) {
+        const idx = findIndex(b.text);
+        matches.push({ type: 'button', text: b.text, id: b.id, dataE2e: b.dataE2e,
+          browserStateIndex: idx, confidence: b.dataE2e ? 'high' : (idx ? 'medium' : 'low') });
+      }
+    } else {
+      // 无明确 intent，返回所有关键元素概览
+      matches = [
+        ...semantic.inputs.slice(0,3).map(e=>({type:'input',placeholder:e.placeholder,browserStateIndex:findIndex(null,e.placeholder)})),
+        ...semantic.buttons.slice(0,5).map(e=>({type:'button',text:e.text,browserStateIndex:findIndex(e.text)})),
+        ...semantic.content.slice(0,2).map(e=>({type:'content',tag:e.tag,id:e.id})),
+      ];
+    }
+
+    res.json({ ok: true, intent, matches, hint: '用 browserStateIndex 直接调 click_element/input_text_element' });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── 启动 ────────────────────────────────────────────────
 server.listen(PORT, HOST, () => {
   console.log(`Chrome Bridge Server running on http://${HOST}:${PORT}`);

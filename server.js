@@ -368,11 +368,21 @@ async function showAgentIndicator(tabId, action) {
     (function(){
       var id='__agent_indicator__';
       var el=document.getElementById(id);
-      if(!el){el=document.createElement('div');el.id=id;
-        el.style.cssText='position:fixed;top:12px;right:12px;z-index:2147483647;background:rgba(30,30,30,0.92);color:#fff;padding:8px 16px;border-radius:8px;font-size:14px;font-family:sans-serif;box-shadow:0 2px 12px rgba(0,0,0,0.4);pointer-events:none;transition:opacity 0.3s;';
-        document.body.appendChild(el);}
+      if(!el){
+        el=document.createElement('div');el.id=id;
+        el.style.cssText='position:fixed;top:16px;right:16px;z-index:2147483647;background:rgba(20,20,20,0.93);color:#fff;padding:8px 18px;border-radius:20px;font-size:14px;font-weight:600;font-family:sans-serif;box-shadow:0 4px 18px rgba(0,0,0,0.5);pointer-events:none;transition:opacity 0.3s;';
+        // 注入跑步动画 keyframe
+        if(!document.getElementById('__agent_indicator_style__')){
+          var st=document.createElement('style');st.id='__agent_indicator_style__';
+          st.textContent='@keyframes __agent_run__{ 0%{transform:translateX(0px)} 25%{transform:translateX(-6px)} 75%{transform:translateX(6px)} 100%{transform:translateX(0px)} }';
+          document.head.appendChild(st);
+        }
+        el.style.animation='__agent_run__ 0.5s ease-in-out infinite';
+        document.body.appendChild(el);
+      }
       el.textContent='${label}';
       el.style.opacity='1';
+      el.style.animation='__agent_run__ 0.5s ease-in-out infinite';
       clearTimeout(el._hideTimer);
     })();
   `;

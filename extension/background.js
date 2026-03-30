@@ -456,9 +456,9 @@ async function handleCommand(command, params) {
       return sendPageControl(tabId, 'ping', {});
     }
 
-    // ── bb-browser 借鉴：Accessibility Tree ──────────────────────────────
+    // ── bb-browser 借鉴：Accessibility Tree（稳定 ref 版）────────────────
     case 'get_ax_tree': {
-      // 获取完整 Accessibility Tree（语义树），AI 理解页面效率比 DOM 高10倍
+      // 获取完整 AX 语义树，ref 基于 role+name+backendDOMNodeId 稳定生成（参考 bb-browser ax-tree-formatter）
       const axDebuggee = { tabId };
       let axAttached = false;
       try {
@@ -466,29 +466,82 @@ async function handleCommand(command, params) {
         axAttached = true;
       } catch (e) {
         if (!String(e).includes('already')) throw e;
+        axAttached = false;
       }
       try {
         const res = await chrome.debugger.sendCommand(axDebuggee, 'Accessibility.getFullAXTree', {});
         const nodes = res.nodes || [];
+
         const SKIP_ROLES = new Set(['none', 'InlineTextBox', 'LineBreak', 'ignored', 'Ignored', 'generic']);
         const INTERACTIVE_ROLES = new Set(['button','link','textbox','searchbox','combobox','listbox','checkbox','radio','slider','spinbutton','switch','tab','menuitem','menuitemcheckbox','menuitemradio','option','treeitem']);
-        const filtered = nodes.filter(n => {
-          if (n.ignored) return false;
+        const CONTENT_ROLES_WITH_REF = new Set(['heading','img','cell','columnheader','rowheader']);
+
+        // nodeId → node 快速查找
+        const nodeMap = new Map();
+        for (const n of nodes) nodeMap.set(n.nodeId, n);
+
+        // role+name 计数器（用于 nth 去重）
+        const roleNameCounts = new Map();
+        const roleNameRefs = new Map();
+        function rnKey(role, name) { return `${role}:${name ?? ''}`; }
+
+        const refs = {};   // ref字符串 → { backendDOMNodeId, role, name, nth }
+        const lines = [];
+
+        // 第一遍：分配 ref
+        for (const n of nodes) {
+          if (n.ignored) continue;
           const role = n.role?.value;
-          if (!role || SKIP_ROLES.has(role)) return false;
-          return true;
-        });
-        // 紧凑文本格式，AI 直接读
-        let ref = 0;
-        const lines = filtered.map(n => {
-          const role = n.role?.value || '';
-          const name = n.name?.value ? ` "${n.name.value}"` : '';
+          if (!role || SKIP_ROLES.has(role)) continue;
+
           const isInteractive = INTERACTIVE_ROLES.has(role);
-          const id = isInteractive ? ` [@${++ref}]` : '';
+          const isContent = CONTENT_ROLES_WITH_REF.has(role);
+          if (!isInteractive && !isContent) continue;
+
+          const name = n.name?.value || undefined;
+          const key = rnKey(role, name);
+          const idx = roleNameCounts.get(key) ?? 0;
+          roleNameCounts.set(key, idx + 1);
+
+          // ref 格式：role_name_nth（空格转_，最多20字符）
+          const namePart = name ? '_' + name.replace(/\s+/g,'_').slice(0,20) : '';
+          let ref = (role + namePart).replace(/[^\w]/g,'_').slice(0,32);
+          if (idx > 0) ref = ref + '_' + idx;
+
+          // 去重（极端情况）
+          let finalRef = ref;
+          let collision = 0;
+          while (refs[finalRef] && collision < 99) { collision++; finalRef = ref + '_x' + collision; }
+
+          refs[finalRef] = { backendDOMNodeId: n.backendDOMNodeId, role, name, nth: idx > 0 ? idx : undefined };
+          if (!roleNameRefs.has(key)) roleNameRefs.set(key, []);
+          roleNameRefs.get(key).push(finalRef);
+
+          // 构建输出行
+          const nameStr = name ? ` "${name}"` : '';
           const val = n.value?.value !== undefined ? ` = ${JSON.stringify(n.value.value)}` : '';
-          return `${role}${name}${val}${id}`;
+          const nthStr = idx > 0 ? ` [nth=${idx}]` : '';
+          lines.push(`${role}${nameStr}${val}${nthStr} [ref=${finalRef}]`);
+        }
+
+        // 清理：只有1个的同 role+name，去掉 nth 标记
+        const cleanLines = lines.map(line => {
+          const m = line.match(/\[ref=(\S+)\]/);
+          if (!m) return line;
+          const refInfo = refs[m[1]];
+          if (!refInfo) return line;
+          const key = rnKey(refInfo.role, refInfo.name);
+          if ((roleNameRefs.get(key) || []).length <= 1) {
+            return line.replace(/\s*\[nth=\d+\]/, '');
+          }
+          return line;
         });
-        return { tree: lines.join('\n'), count: lines.length };
+
+        return {
+          tree: cleanLines.join('\n') || '(empty)',
+          refs,
+          count: cleanLines.length
+        };
       } finally {
         if (axAttached) await chrome.debugger.detach(axDebuggee).catch(() => {});
       }

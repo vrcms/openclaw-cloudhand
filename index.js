@@ -313,6 +313,44 @@ const TOOLS = [
       const r = await bridgeCall('POST', '/eval', { expression, tabId });
       return JSON.stringify(r);
     }
+  },
+  {
+    name: 'cloudhand_ax_tree',
+    description: 'Get the Accessibility Tree of the current page. Returns a compact text snapshot with stable [ref=N] identifiers for interactive elements (buttons, links, inputs, etc). Use this instead of get_browser_state for faster AI page understanding. Then use cloudhand_click_ref or cloudhand_type_ref to interact with elements by ref number.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tabId: { type: 'number', description: 'Tab ID (optional)' },
+        interactive: { type: 'boolean', description: 'Only return interactive elements (default: false)' },
+        compact: { type: 'boolean', description: 'Remove empty structural nodes (default: true)' },
+        maxDepth: { type: 'number', description: 'Max tree depth (optional)' }
+      },
+      additionalProperties: false
+    },
+    handler: async ({ tabId, interactive, compact, maxDepth } = {}) => {
+      const r = await bridgeCall('POST', '/get_ax_tree', { tabId, interactive, compact: compact !== false, maxDepth });
+      return JSON.stringify(r);
+    }
+  },
+  {
+    name: 'cloudhand_fetch',
+    description: 'Fetch a URL using the current browser tab login session (cookies included). Much faster than DOM manipulation for reading data from sites you are already logged into. Returns { status, ok, data }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL to fetch' },
+        method: { type: 'string', description: 'HTTP method (default: GET)', enum: ['GET','POST','PUT','DELETE','PATCH'] },
+        headers: { type: 'object', description: 'Additional headers (optional)' },
+        body: { type: 'object', description: 'Request body for POST/PUT (optional)' },
+        tabId: { type: 'number', description: 'Tab ID to use login session from (optional)' }
+      },
+      required: ['url'],
+      additionalProperties: false
+    },
+    handler: async ({ url, method, headers, body, tabId } = {}) => {
+      const r = await bridgeCall('POST', '/fetch_with_cookies', { url, method, headers, body, tabId });
+      return JSON.stringify(r);
+    }
   }
 ];
 // OpenClaw plugin register function

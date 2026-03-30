@@ -595,7 +595,7 @@ async function handleSnapshot(req, res) {
  'wait_for','get_cookies','new_tab','new_window','close_tab','focus_tab','hover','hotkey',
  'find_elements','set_value','go_back','go_forward','select','eval',
  'get_browser_state','click_element','input_text_element','ping_page_controller','debug_dom',
- 'get_ax_tree','fetch_with_cookies'].forEach(cmd => {
+ 'get_ax_tree','fetch_with_cookies','cdp_click','cdp_type','network_capture','console_capture'].forEach(cmd => {
   app.post('/' + cmd, route(cmd));
 });
 

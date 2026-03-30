@@ -351,6 +351,73 @@ const TOOLS = [
       const r = await bridgeCall('POST', '/fetch_with_cookies', { url, method, headers, body, tabId });
       return JSON.stringify(r);
     }
+  },
+  {
+    name: 'cloudhand_cdp_click',
+    description: 'Click an element using real CDP mouse events (Input.dispatchMouseEvent). More reliable than JS click, bypasses anti-bot detection. Provide selector (CSS) to click a specific element.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector of element to click' },
+        tabId: { type: 'number', description: 'Tab ID (optional)' }
+      },
+      required: ['selector'],
+      additionalProperties: false
+    },
+    handler: async ({ selector, tabId } = {}) => {
+      const r = await bridgeCall('POST', '/cdp_click', { selector, tabId });
+      return JSON.stringify(r);
+    }
+  },
+  {
+    name: 'cloudhand_cdp_type',
+    description: 'Type text using real CDP keyboard events (Input.dispatchKeyEvent), simulating human keystroke timing. Use this instead of cloudhand_type when sites have anti-bot protection.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Text to type' },
+        selector: { type: 'string', description: 'CSS selector to focus before typing (optional)' },
+        tabId: { type: 'number', description: 'Tab ID (optional)' }
+      },
+      required: ['text'],
+      additionalProperties: false
+    },
+    handler: async ({ text, selector, tabId } = {}) => {
+      const r = await bridgeCall('POST', '/cdp_type', { text, selector, tabId });
+      return JSON.stringify(r);
+    }
+  },
+  {
+    name: 'cloudhand_network_capture',
+    description: 'Capture network requests (XHR/fetch) from the current tab for a specified duration. Useful for reverse-engineering APIs. Returns up to 50 non-static requests.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        waitMs: { type: 'number', description: 'How long to capture in milliseconds (default: 3000)' },
+        tabId: { type: 'number', description: 'Tab ID (optional)' }
+      },
+      additionalProperties: false
+    },
+    handler: async ({ waitMs, tabId } = {}) => {
+      const r = await bridgeCall('POST', '/network_capture', { waitMs, tabId });
+      return JSON.stringify(r);
+    }
+  },
+  {
+    name: 'cloudhand_console',
+    description: 'Capture browser console logs and JavaScript errors from the current tab for a specified duration. Useful for debugging page issues.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        waitMs: { type: 'number', description: 'How long to capture in milliseconds (default: 2000)' },
+        tabId: { type: 'number', description: 'Tab ID (optional)' }
+      },
+      additionalProperties: false
+    },
+    handler: async ({ waitMs, tabId } = {}) => {
+      const r = await bridgeCall('POST', '/console_capture', { waitMs, tabId });
+      return JSON.stringify(r);
+    }
   }
 ];
 // OpenClaw plugin register function

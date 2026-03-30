@@ -456,10 +456,71 @@ async function handleCommand(command, params) {
       return sendPageControl(tabId, 'ping', {});
     }
 
+    // ── bb-browser 借鉴：Accessibility Tree ──────────────────────────────
+    case 'get_ax_tree': {
+      // 获取完整 Accessibility Tree（语义树），AI 理解页面效率比 DOM 高10倍
+      const axDebuggee = { tabId };
+      let axAttached = false;
+      try {
+        await chrome.debugger.attach(axDebuggee, '1.3');
+        axAttached = true;
+      } catch (e) {
+        if (!String(e).includes('already')) throw e;
+      }
+      try {
+        const res = await chrome.debugger.sendCommand(axDebuggee, 'Accessibility.getFullAXTree', {});
+        const nodes = res.nodes || [];
+        const SKIP_ROLES = new Set(['none', 'InlineTextBox', 'LineBreak', 'ignored', 'Ignored', 'generic']);
+        const INTERACTIVE_ROLES = new Set(['button','link','textbox','searchbox','combobox','listbox','checkbox','radio','slider','spinbutton','switch','tab','menuitem','menuitemcheckbox','menuitemradio','option','treeitem']);
+        const filtered = nodes.filter(n => {
+          if (n.ignored) return false;
+          const role = n.role?.value;
+          if (!role || SKIP_ROLES.has(role)) return false;
+          return true;
+        });
+        // 紧凑文本格式，AI 直接读
+        let ref = 0;
+        const lines = filtered.map(n => {
+          const role = n.role?.value || '';
+          const name = n.name?.value ? ` "${n.name.value}"` : '';
+          const isInteractive = INTERACTIVE_ROLES.has(role);
+          const id = isInteractive ? ` [@${++ref}]` : '';
+          const val = n.value?.value !== undefined ? ` = ${JSON.stringify(n.value.value)}` : '';
+          return `${role}${name}${val}${id}`;
+        });
+        return { tree: lines.join('\n'), count: lines.length };
+      } finally {
+        if (axAttached) await chrome.debugger.detach(axDebuggee).catch(() => {});
+      }
+    }
+
+    // ── bb-browser 借鉴：带登录态的 fetch ────────────────────────────────
+    case 'fetch_with_cookies': {
+      // 直接用当前页面的登录态发 HTTP 请求，比操作 DOM 快10倍
+      const fetchUrl = params.url;
+      if (!fetchUrl) throw new Error('url is required');
+      const fetchMethod = params.method || 'GET';
+      const fetchHeaders = params.headers || {};
+      const fetchBody = params.body ? JSON.stringify(params.body) : undefined;
+      const result = await runDebuggerEval(tabId, `
+        (async () => {
+          const resp = await fetch(${JSON.stringify(fetchUrl)}, {
+            method: ${JSON.stringify(fetchMethod)},
+            headers: { 'Content-Type': 'application/json', ...${JSON.stringify(fetchHeaders)} },
+            body: ${fetchBody ? JSON.stringify(fetchBody) : 'undefined'},
+            credentials: 'include'
+          });
+          const text = await resp.text();
+          let data;
+          try { data = JSON.parse(text); } catch(e) { data = text; }
+          return { status: resp.status, ok: resp.ok, data };
+        })()
+      `);
+      return result;
+    }
+
     default:
       throw new Error('Unknown command: ' + command);
-  }
-}
 
 // 向 content_script(ISOLATED world) 发送 CH_PAGE_CONTROL 消息
 function sendPageControl(tabId, action, payload) {

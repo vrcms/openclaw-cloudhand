@@ -625,6 +625,61 @@ curl -s -X POST http://127.0.0.1:9876/wait_for_text \
 
 ---
 
+---
+
+### 4. `get_ax_tree` — Accessibility Tree（AI语义理解，v2.4.6新增）
+
+获取页面无障碍树，比 HTML DOM 节省 70% token，AI 理解更精准。
+
+```bash
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H "Authorization: Bearer $APITOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"tabId": 123, "command": "get_ax_tree", "params": {"compact": true}}'
+```
+
+返回紧凑文本格式（compact=true，默认）：
+```
+heading "知乎 - 与世界分享你的知识"
+@1 searchbox "搜索"
+@2 button "搜索"
+link "首页"
+@3 button "提问"
+...
+```
+
+- `@N` 前缀 = 可交互元素，可直接用 `click` 的 ref
+- `compact: false` 返回原始 JSON 节点数组
+- 适合：页面结构分析、找按钮/输入框、理解页面内容
+
+---
+
+### 5. `fetch_with_cookies` — 带登录态HTTP请求（v2.4.6新增）
+
+直接用当前 tab 的登录 cookie 发 HTTP 请求，比操作 DOM 快10倍，适合调用网站内部 API。
+
+```bash
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H "Authorization: Bearer $APITOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "tabId": 123,
+    "command": "fetch_with_cookies",
+    "params": {
+      "url": "https://www.zhihu.com/api/v4/questions/123/answers",
+      "method": "GET",
+      "headers": {"Accept": "application/json"}
+    }
+  }'
+```
+
+- 自动带上当前 tab 域名的所有 cookie（登录态）
+- 支持 GET/POST/PUT，支持自定义 headers 和 body
+- 返回 `{status, headers, body, bodyText}`
+- **最佳场景**：知乎/B站/微博等已登录网站的数据抓取，无需模拟点击
+
+---
+
 ## 📋 推荐操作流程（v1.1.0 最佳实践）
 
 ```

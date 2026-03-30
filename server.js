@@ -50,7 +50,7 @@ app.use((req, res, next) => {
 });
 
 // 免鉴权端点白名单
-const PUBLIC_PATHS = new Set(['/status', '/config', '/pair/challenge', '/pair/revoke', '/token', '/download-ext']);
+const PUBLIC_PATHS = new Set(['/status', '/config', '/pair/challenge', '/pair/revoke', '/token', '/download-ext', '/download-termhand']);
 
 // Bearer Token 鉴权中间件
 app.use((req, res, next) => {
@@ -257,6 +257,16 @@ app.get('/download-ext', (req, res) => {
     }
   });
 });
+
+// TermHand 下载（公开，无需鉴权）
+app.get('/download-termhand', (req, res) => {
+  const zipPath = '/root/.openclaw/workspace/termhand/termhand.zip';
+  if (!fs.existsSync(zipPath)) {
+    return res.status(404).json({ error: 'termhand.zip not found' });
+  }
+  res.download(zipPath, 'termhand.zip');
+});
+
 
 // 获取 apiToken（仅限 127.0.0.1 本机访问）
 app.get('/token', (req, res) => {
@@ -674,6 +684,135 @@ app.post('/smart_locate', async (req, res) => {
     }
 
     res.json({ ok: true, intent, matches, hint: '用 browserStateIndex 直接调 click_element/input_text_element' });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── snapshot_ai：AI优化快照，返回稳定 ref + 文本树 ──────────────────
+app.post('/snapshot_ai', async (req, res) => {
+  try {
+    const tabId = req.body && req.body.tabId ? parseInt(req.body.tabId) : undefined;
+    const script = `(function() {
+      // 生成稳定 ref：优先 data-e2e > data-testid > id > name > aria-label > 哈希
+      function stableRef(el, idx) {
+        const v = el.dataset.e2e || el.dataset.testid || el.id ||
+                  el.name || el.getAttribute('aria-label') || el.getAttribute('placeholder');
+        if (v) return v.replace(/\\s+/g,'_').slice(0,30);
+        return 'e' + idx;
+      }
+      const tags = ['a','button','input','textarea','select','[role=button]','[role=link]','[role=tab]','[role=menuitem]','[role=option]'];
+      const allEls = [...document.querySelectorAll(tags.join(','))]
+        .filter(el => el.offsetParent !== null);
+      const refs = {};
+      const lines = [];
+      const usedRefs = {};
+      allEls.forEach((el, idx) => {
+        let ref = stableRef(el, idx);
+        // 去重：如果 ref 已用，加 _N 后缀
+        if (usedRefs[ref] !== undefined) {
+          usedRefs[ref]++;
+          ref = ref + '_' + usedRefs[ref];
+        } else { usedRefs[ref] = 0; }
+        const role = el.getAttribute('role') || el.tagName.toLowerCase();
+        const name = (el.innerText || el.value || el.getAttribute('placeholder') || el.getAttribute('aria-label') || '').trim().slice(0,60);
+        const href = el.href ? el.href.slice(0,100) : undefined;
+        refs[ref] = { role, name, tag: el.tagName.toLowerCase(), href };
+        let line = '[' + ref + '] <' + role + '>';
+        if (name) line += ' ' + name;
+        if (href) line += ' (' + href + ')';
+        lines.push(line);
+      });
+      // 页面主要文本内容（非交互元素）
+      const bodyText = (document.body.innerText || '').replace(/\\s+/g,' ').trim().slice(0,500);
+      return JSON.stringify({
+        url: location.href, title: document.title,
+        text: lines.join('\\n'),
+        refs,
+        bodyText
+      });
+    })()`;
+    const result = await sendCommand('eval', { expression: script, ...(tabId ? { tabId } : {}) });
+    const data = typeof result === 'string' ? JSON.parse(result) : result;
+    res.json({ ok: true, result: data });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── fill_batch：批量填写表单字段 ──────────────────────────────────
+app.post('/fill_batch', async (req, res) => {
+  try {
+    const tabId = req.body && req.body.tabId ? parseInt(req.body.tabId) : undefined;
+    const fields = req.body.fields; // [{ref, value, type?}]
+    if (!Array.isArray(fields) || fields.length === 0) {
+      return res.status(400).json({ error: 'fields must be a non-empty array' });
+    }
+    const script = `(function(fields) {
+      const tags = ['a','button','input','textarea','select','[role=button]','[role=link]','[role=tab]','[role=menuitem]','[role=option]'];
+      const allEls = [...document.querySelectorAll(tags.join(','))].filter(el => el.offsetParent !== null);
+      function stableRef(el, idx) {
+        const v = el.dataset.e2e || el.dataset.testid || el.id ||
+                  el.name || el.getAttribute('aria-label') || el.getAttribute('placeholder');
+        if (v) return v.replace(/\\s+/g,'_').slice(0,30);
+        return 'e' + idx;
+      }
+      const usedRefs = {};
+      const refMap = {};
+      allEls.forEach((el, idx) => {
+        let ref = stableRef(el, idx);
+        if (usedRefs[ref] !== undefined) { usedRefs[ref]++; ref = ref + '_' + usedRefs[ref]; }
+        else { usedRefs[ref] = 0; }
+        refMap[ref] = el;
+      });
+      const results = [];
+      for (const f of fields) {
+        const el = refMap[f.ref];
+        if (!el) { results.push({ ref: f.ref, ok: false, error: 'ref not found' }); continue; }
+        try {
+          el.focus();
+          if (el.tagName === 'SELECT') {
+            el.value = f.value;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          } else if (f.type === 'checkbox' || f.type === 'radio') {
+            el.checked = f.checked !== undefined ? f.checked : true;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          } else {
+            el.value = '';
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value') ||
+                                           Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value');
+            if (nativeInputValueSetter) nativeInputValueSetter.set.call(el, f.value);
+            else el.value = f.value;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          results.push({ ref: f.ref, ok: true });
+        } catch(err) { results.push({ ref: f.ref, ok: false, error: err.message }); }
+      }
+      return JSON.stringify(results);
+    })(${JSON.stringify(fields)})`;
+    const result = await sendCommand('eval', { expression: script, ...(tabId ? { tabId } : {}) });
+    const data = typeof result === 'string' ? JSON.parse(result) : result;
+    res.json({ ok: true, results: data });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── wait_for_text：等待页面出现指定文本或元素 ──────────────────────
+app.post('/wait_for_text', async (req, res) => {
+  try {
+    const tabId = req.body && req.body.tabId ? parseInt(req.body.tabId) : undefined;
+    const text = req.body.text || '';
+    const selector = req.body.selector || '';
+    const timeout = Math.min(req.body.timeout || 10000, 30000);
+    const interval = 500;
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      const script = selector
+        ? `!!document.querySelector(${JSON.stringify(selector)})`
+        : `document.body.innerText.includes(${JSON.stringify(text)})`;
+      const result = await sendCommand('eval', { expression: script, ...(tabId ? { tabId } : {}) });
+      if (result === true || result === 'true') {
+        return res.json({ ok: true, elapsed: Date.now() - start });
+      }
+      await new Promise(r => setTimeout(r, interval));
+    }
+    res.status(408).json({ ok: false, error: 'timeout', elapsed: timeout });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 

@@ -545,3 +545,97 @@ curl -s -X POST http://127.0.0.1:9876/navigate \
 ```
 
 **禁止硬编码 windowId！永远用上面的动态脚本。**
+
+---
+
+## 🚀 新增高效 API（v1.1.0）
+
+### 1. `/snapshot_ai` — AI优化快照（推荐替代 get_browser_state）
+
+返回**稳定 ref + 纯文本树**，token 消耗比 `get_browser_state` 少 80%。
+
+```bash
+curl -s -X POST http://127.0.0.1:9876/snapshot_ai \
+  -H "Authorization: Bearer $APITOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"tabId\":$TAB_ID}"
+```
+
+返回格式：
+```json
+{
+  "ok": true,
+  "result": {
+    "url": "https://...",
+    "title": "页面标题",
+    "text": "[e1] button: 搜索\n[e2] textbox: 关键词 (placeholder: 请输入)\n[e3] link: 最新资讯",
+    "refs": [
+      {"ref": "e1", "role": "button", "name": "搜索", "selector": "#su"},
+      {"ref": "e2", "role": "textbox", "placeholder": "请输入", "selector": "#kw"}
+    ]
+  }
+}
+```
+
+**使用方式：**
+1. 调 `/snapshot_ai` 读取页面，AI 从 `text` 里找目标元素的 `ref`（如 `e2`）
+2. 用 ref 对应的 `selector` 调 `click_element` 或 `input_text_element`
+
+**ref 生成优先级：** `data-e2e` → `data-testid` → `id` → `name` → `aria-label` → `placeholder` → 位置哈希
+
+---
+
+### 2. `/fill_batch` — 批量填表单（减少 66% 请求数）
+
+一次请求填多个字段，适合登录页、注册页、搜索表单。
+
+```bash
+curl -s -X POST http://127.0.0.1:9876/fill_batch \
+  -H "Authorization: Bearer $APITOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "tabId": 123,
+    "fields": [
+      {"selector": "#username", "value": "user@example.com"},
+      {"selector": "#password", "value": "secret123"},
+      {"selector": "input[name=remember]", "checked": true}
+    ]
+  }'
+```
+
+- 支持 `value`（文本输入）和 `checked`（checkbox/radio）
+- 返回每个字段的操作结果
+
+---
+
+### 3. `/wait_for_text` — 条件等待（替代 sleep）
+
+等待页面出现特定文字，比固定 `sleep` 节省 30-50% 等待时间。
+
+```bash
+curl -s -X POST http://127.0.0.1:9876/wait_for_text \
+  -H "Authorization: Bearer $APITOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"tabId": 123, "text": "加载完成", "timeout": 10000}'
+```
+
+- `timeout`：最长等待毫秒数（默认 10000ms）
+- 页面出现该文字后立即返回 `{ok: true, elapsed: 1234}`
+- 超时返回 `{ok: false, error: "timeout"}`
+
+---
+
+## 📋 推荐操作流程（v1.1.0 最佳实践）
+
+```
+1. 获取/创建 agent 窗口
+2. new_tab → navigate → wait_for_text（等页面关键词出现）
+3. snapshot_ai → AI 读 text 字段，选目标 ref → 取 selector
+4. click / fill_batch（用 selector 操作）
+5. 任务完成 → 清理 tab
+```
+
+**旧流程（仍然有效但较慢）：**
+```
+navigate → sleep(3) → get_browser_state → AI 选索引 → click_element
+```

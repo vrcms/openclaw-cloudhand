@@ -44,17 +44,6 @@ async function init() {
   chrome.runtime.sendMessage({ type: 'getStatus' }, (resp) => {
     updateStatusDot(resp?.connected);
   });
-
-  // 检查是否有新版本
-  const updateData = await getStorage(['updateAvailable', 'latestVersion', 'currentVersion']);
-  if (updateData.updateAvailable) {
-    const card = document.getElementById('updateCard');
-    const msg = document.getElementById('updateMsg');
-    if (card && msg) {
-      msg.textContent = `当前版本 ${updateData.currentVersion || '?'}，最新版本 ${updateData.latestVersion}，建议立即更新。`;
-      card.style.display = 'block';
-    }
-  }
 }
 
 function showConnected(url, createdAt) {

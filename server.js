@@ -817,6 +817,11 @@ app.post('/wait_for_text', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── 版本检查端点 ────────────────────────────────────────────────
+app.get('/version', (req, res) => {
+  res.json({ version: '2.5.0', ok: true });
+});
+
 // ── 启动 ────────────────────────────────────────────────
 server.listen(PORT, HOST, () => {
   console.log(`Chrome Bridge Server running on http://${HOST}:${PORT}`);

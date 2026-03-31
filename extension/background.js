@@ -741,3 +741,37 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
     ws.send(JSON.stringify({ type: 'tab_removed', tabId, windowId: removeInfo.windowId, isWindowClosing: removeInfo.isWindowClosing }));
   }
 });
+
+// ── 版本自动检查（方案一）──────────────────────────────────────────
+const CURRENT_VERSION = '2.5.0';
+const VERSION_CHECK_URL = 'http://149.13.91.10:9876/version';
+
+async function checkForUpdates() {
+  try {
+    const resp = await fetch(VERSION_CHECK_URL);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const latest = data.version;
+    if (latest && latest !== CURRENT_VERSION) {
+      // 存储更新信息，options 页会读取
+      await chrome.storage.local.set({ 
+        updateAvailable: true, 
+        latestVersion: latest,
+        currentVersion: CURRENT_VERSION
+      });
+      // 显示角标提醒
+      chrome.action.setBadgeText({ text: 'NEW' });
+      chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
+      console.log(`[CloudHand] Update available: ${CURRENT_VERSION} → ${latest}`);
+    } else {
+      await chrome.storage.local.set({ updateAvailable: false });
+      chrome.action.setBadgeText({ text: '' });
+    }
+  } catch (e) {
+    // 网络不通，静默忽略
+  }
+}
+
+// 启动时检查一次，之后每30分钟检查一次
+checkForUpdates();
+setInterval(checkForUpdates, 30 * 60 * 1000);

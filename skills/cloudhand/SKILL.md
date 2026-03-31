@@ -694,3 +694,139 @@ curl -s -X POST http://127.0.0.1:9876/command \
 ```
 navigate → sleep(3) → get_browser_state → AI 选索引 → click_element
 ```
+
+---
+
+## 🆕 v2.5.0 新增功能
+
+### 6. `cdp_click` — CDP 真实鼠标点击（绕过反bot检测）
+
+用 Chrome DevTools Protocol 模拟真实鼠标事件序列（mouseMoved → mousePressed → mouseReleased），绕过检测 `isTrusted` 的反机器人防护。
+
+```bash
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H "Authorization: Bearer $APITOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"tabId": 123, "command": "cdp_click", "params": {"selector": "#submit-btn"}}'
+```
+
+参数：
+- `selector`：CSS 选择器（优先）
+- `x` / `y`：坐标（selector 找不到时用坐标）
+
+返回：`{ok: true, x: 123, y: 456}`
+
+**适用场景**：微博/抖音/知乎等检测 `isTrusted` 的按钮点击，普通 `click` 失效时换这个。
+
+---
+
+### 7. `cdp_type` — CDP 真实键盘输入（逐键模拟）
+
+逐字符模拟真实键盘 keyDown/char/keyUp 事件，绕过反机器人输入检测。
+
+```bash
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H "Authorization: Bearer $APITOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"tabId": 123, "command": "cdp_type", "params": {"selector": "input[name=search]", "text": "hello world", "delay": 50}}'
+```
+
+参数：
+- `selector`：先 focus 该元素再输入
+- `text`：要输入的文字
+- `delay`：每个字符间隔毫秒（默认 30ms，模拟人工输入速度）
+
+**适用场景**：搜索框、登录表单等有输入防检测的站点。
+
+---
+
+### 8. `network_capture` — 抓取网络请求
+
+监听页面指定时间段内的所有网络请求（URL + 状态码 + 响应体）。
+
+```bash
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H "Authorization: Bearer $APITOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"tabId": 123, "command": "network_capture", "params": {"waitMs": 3000, "filter": "api"}}'
+```
+
+参数：
+- `waitMs`：监听时长（毫秒，默认 3000，最大 15000）
+- `filter`：URL 过滤关键词（可选，如 `"api"` 只捕获含 api 的请求）
+
+返回：`{ok: true, count: 5, requests: [{url, method, status, body}...]}`
+
+**适用场景**：
+- 发现网站内部 API 端点（配合 `fetch_with_cookies` 直接调用）
+- 调试页面加载问题
+- 抓取 XHR/Fetch 请求的响应数据
+
+---
+
+### 9. `console_capture` — 捕获 Console 日志和 JS 错误
+
+监听页面指定时间段内的所有 console 输出和 JS 异常。
+
+```bash
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H "Authorization: Bearer $APITOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"tabId": 123, "command": "console_capture", "params": {"waitMs": 2000}}'
+```
+
+参数：
+- `waitMs`：监听时长（毫秒，默认 2000）
+
+返回：`{ok: true, count: 3, logs: [{type: "log"|"error"|"warn", args: [...], timestamp}...]}`
+
+**适用场景**：
+- 调试页面 JS 错误
+- 捕获网站通过 console 输出的数据
+- 验证操作是否触发了预期的 JS 逻辑
+
+---
+
+### 10. `/version` — 版本检查端点
+
+```bash
+curl -s http://127.0.0.1:9876/version
+# 返回: {"version": "2.5.0", "ok": true}
+```
+
+扩展也会定期调用此端点检查是否有新版本可用，options 页右下角显示版本号，点击可触发版本检查。
+
+---
+
+## 📊 v2.5.0 完整命令速查表
+
+| 命令 | 说明 | 版本 |
+|------|------|------|
+| `navigate` | 导航到 URL | v1.0 |
+| `screenshot` | 截图（base64） | v1.0 |
+| `get_html` | 获取页面 HTML | v1.0 |
+| `get_text` | 获取页面文本 | v1.0 |
+| `click` | JS 点击（selector/index） | v1.0 |
+| `type` | JS 输入文字 | v1.0 |
+| `set_value` | 直接设置 input value | v1.0 |
+| `key` | 发送按键（Enter/Tab等） | v1.0 |
+| `hotkey` | 发送组合键 | v1.0 |
+| `scroll` | 滚动页面 | v1.0 |
+| `hover` | 鼠标悬停 | v1.0 |
+| `select` | 选择 select 元素 | v1.0 |
+| `wait_for` | 等待元素出现 | v1.0 |
+| `get_cookies` | 获取 Cookie | v1.0 |
+| `close_tab` | 关闭 tab | v1.0 |
+| `go_back` / `go_forward` | 前进/后退 | v1.0 |
+| `eval` | 执行 JS 表达式 | v1.0 |
+| `find_elements` | 查找元素列表 | v1.0 |
+| `page_info` | 页面基本信息 | v1.0 |
+| `get_browser_state` | 浏览器状态（旧版） | v1.0 |
+| `click_element` | 点击元素（旧版） | v1.0 |
+| `input_text_element` | 输入文字（旧版） | v1.0 |
+| `get_ax_tree` | Accessibility Tree | v2.4.6 |
+| `fetch_with_cookies` | 带登录态 HTTP 请求 | v2.4.6 |
+| `cdp_click` | CDP 真实鼠标点击 | v2.5.0 |
+| `cdp_type` | CDP 真实键盘输入 | v2.5.0 |
+| `network_capture` | 抓取网络请求 | v2.5.0 |
+| `console_capture` | 捕获 Console 日志 | v2.5.0 |

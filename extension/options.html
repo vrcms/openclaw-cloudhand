@@ -65,6 +65,20 @@
     <button class="btn btn-danger" onclick="doRevoke()">断开连接 / 重新配对</button>
   </div>
 
+  <!-- 版本更新提示卡片 -->
+  <div class="card" id="updateCard" style="display:none;border:1.5px solid #f59e0b;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span style="font-size:20px">🆕</span>
+      <span style="font-weight:600;color:#92400e">发现新版本</span>
+    </div>
+    <p style="font-size:13px;color:#78350f;margin:0 0 12px" id="updateMsg"></p>
+    <a id="updateBtn" href="http://149.13.91.10:9876/download-ext" target="_blank"
+       style="display:block;text-align:center;padding:10px;background:#f59e0b;color:white;border-radius:8px;font-weight:600;text-decoration:none;font-size:14px">
+      ⬇️ 下载新版扩展
+    </a>
+    <p style="font-size:11px;color:#9ca3af;margin:8px 0 0">下载后解压，在 chrome://extensions 刷新扩展即可</p>
+  </div>
+
   <script type="module" src="options.js"></script>
 </body>
 </html>

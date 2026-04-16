@@ -49,7 +49,7 @@ ok "python3" "$(python3 --version)"
 
 # ── 检查插件目录 / Check plugin directory ────────────
 echo ''
-if [ ! -f "$CLOUDHAND_DIR/index.js" ]; then
+if [ ! -f "$CLOUDHAND_DIR/cloudhand-bridge/index.js" ]; then
   err "Plugin files not found at: $CLOUDHAND_DIR" \
       "插件文件不存在: $CLOUDHAND_DIR"
 fi

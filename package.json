@@ -1,0 +1,10 @@
+{
+  "name": "openclaw-cloudhand",
+  "version": "2.6.0",
+  "description": "CloudHand - Control local Chrome via WebSocket bridge",
+  "main": "cloudhand-bridge/index.js",
+  "dependencies": {
+    "express": "^4.18.0",
+    "ws": "^8.14.0"
+  }
+}

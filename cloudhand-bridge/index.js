@@ -30,7 +30,7 @@ function startBridge(pluginDir) {
     console.log('[cloudhand] Bridge already running');
     return;
   }
-  const serverPath = path.join(pluginDir, 'server.js');
+  const serverPath = path.join(__dirname, 'server.js');
   bridgeProcess = spawn('node', [serverPath], {
     detached: false,
     stdio: ['ignore', 'pipe', 'pipe'],

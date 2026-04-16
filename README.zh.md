@@ -2,15 +2,19 @@
 
 > 让远程 AI 控制你本地的 Chrome 浏览器。
 
-[![版本](https://img.shields.io/badge/版本-2.4.6-blue.svg)](https://github.com/vrcms/openclaw-cloudhand)
+[![版本](https://img.shields.io/badge/版本-2.6.0-blue.svg)](https://github.com/vrcms/openclaw-cloudhand)
 [![OpenClaw 插件](https://img.shields.io/badge/openclaw-plugin-orange.svg)](https://openclaw.ai)
 
 **[English](README.md)** | 中文
 
 ## 什么是云手？
 
-云手是一个 OpenClaw 插件，将运行在 VPS 上的远程 AI 和你本地的 Chrome 浏览器连接起来。让 AI 能够：
+云手是一个连接 AI 智能体和 Chrome 浏览器的桥梁。它支持两种模式：
 
+1. **远程模式**：连接运行在 VPS 上的 OpenClaw AI 助理。
+2. **本地模式 (New)**：连接运行在你本机的 AI 智能体（如 Claude Code, Qwen Code, Gemini CLI, Codex CLI）。
+
+让 AI 能够：
 - 导航到任意网址
 - 点击元素、输入文字、按键
 - 执行任意 JavaScript（`eval`）
@@ -19,45 +23,74 @@
 - **安全获取 Tab**（`ensure_tab`）：自动处理各类浏览器环境，不乱开新窗口
 - 控制标签页、滚动、前进/后退
 
-**典型使用场景：**
-- AI 需要访问需要登录的网站（利用你已有的 Cookie）
-- 绕过反爬虫机制（真实浏览器行为）
-- 操作复杂的 Web 应用界面
-- 批量自动化网页任务
+## 架构原理 (v2.6.0+ 双路并行)
 
-## 架构原理
+云手现在支持**本地与远程同时在线**。你可以让 VPS 上的 OpenClaw 处理长周期任务，同时让本机的 Claude Code 实时操作浏览器，互不干扰。
 
 ```
+      【远程链路】                      【本地链路】
 ┌─────────────────────┐         ┌──────────────────────────┐
-│   VPS（OpenClaw）    │         │   你的电脑               │
+│   VPS (Remote AI)   │         │   你的电脑 (Local Host)    │
 │                     │         │                          │
-│  AI 助理            │         │  Chrome 浏览器           │
-│     ↓               │         │     ↑                    │
-│  cloudhand_*        │ ←WS──→  │  CloudHand 扩展          │
-│  工具调用           │  9876   │  （Chrome MV3 扩展）     │
-│     ↓               │         │                          │
-│  Bridge 服务端      │         └──────────────────────────┘
-│  （server.js）      │
-└─────────────────────┘
+│  AI 助理 (OpenClaw) │         │  AI 智能体 (Local Agent)  │
+│     ↓               │         │  (Claude / Gemini / Qwen)│
+│  Bridge 服务端      │ ──WS──┐ │          ↓               │
+│  (server.js)        │  9876 │ │  Chrome 浏览器 (Local)     │
+└─────────────────────┘       │ │          ↑               │
+                              └─┼─→ CloudHand 扩展 (v2.6)  │
+                                │          ↑               │
+                                │  Bridge 服务端 (Local)    │
+                                │  (server.js --local)     │
+                                └──────────────────────────┘
 ```
 
-Chrome 扩展**主动连接** VPS——你的本地电脑不需要开放任何端口。
+## 🌟 核心特性
 
-## 安装教程
+- **双路并行**：真正实现本地 AI 与远程 VPS AI 同时操控，无感切换。
+- **自包含技能**：AI 技能目录自带完整运行环境，即插即用。
+- **零延迟控制**：本地链路响应速度可达毫秒级。
+- **免配对体验**：本地模式自动感应，告别 6 位配对码。
+- **专家级交互**：内置确保专属窗口、语义定位、真实点击等高级 API。
 
-### 第一步：VPS 端（一条命令）
+## 📦 安装与配置
 
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/vrcms/openclaw-cloudhand/main/install.sh)
-```
+云手支持两种运行模式，请根据你的使用场景选择：
 
-该脚本会自动完成：
-1. 安装插件到 `~/.openclaw/extensions/cloudhand/`
-2. 安装 npm 依赖
-3. 在 OpenClaw 配置中注册插件
-4. 重启 Gateway
+---
 
-### 第二步：安装 Chrome 扩展
+### 场景 A：远程 VPS 模式 (针对 OpenClaw 用户)
+**适用场景**：AI 运行在公网 VPS 上，需要控制你家里的本地 Chrome 浏览器。
+
+1. **VPS 端一键安装**：
+   ```bash
+   bash <(curl -fsSL https://raw.githubusercontent.com/vrcms/openclaw-cloudhand/main/cloudhand-bridge/install.sh)
+   ```
+2. **本地端配置**：
+   - 下载并安装 Chrome 扩展（参考下文“扩展下载”）。
+   - 向 AI 获取 6 位配对码并完成配对。
+3. **完成**：AI 助理即可在 VPS 上通过 WebSocket 控制你的浏览器。
+
+---
+
+### 场景 B：本地模式 (针对 Claude Code / Gemini / Qwen 用户)
+**适用场景**：AI 直接运行在你本地电脑的命令行，需要极速控制当前 Chrome。
+
+1. **获取代码**：
+   ```bash
+   git clone https://github.com/vrcms/openclaw-cloudhand.git
+   cd openclaw-cloudhand
+   ```
+2. **启动本地 Bridge**：
+   - **Windows**: 双击 `cloudhand-bridge/start-local.bat`。
+   - **Mac/Linux**: 执行 `bash cloudhand-bridge/start-local.sh`。
+3. **AI 智能体配置**：
+   - 将项目中的 `ai-skills/cloudhand-local` 目录内容告知或提供给你的 AI 智能体。
+   - 智能体会根据技能规范自动探测 `127.0.0.1:9876` 并获取 Token。
+4. **完成**：本地 AI 将以零延迟控制你的浏览器，无需配对。
+
+---
+
+## 🧩 安装 Chrome 扩展 (通用步骤)
 
 1. **向 AI 获取安全下载链接：**
 

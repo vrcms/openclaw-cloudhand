@@ -6,8 +6,10 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 9876;
-const HOST = process.env.HOST || '0.0.0.0';
+const LOCAL_MODE = process.argv.includes('--local');
+const HOST = LOCAL_MODE ? '127.0.0.1' : (process.env.HOST || '0.0.0.0');
 const CONFIG_FILE = path.join(process.env.HOME || '/root', '.openclaw/chrome-bridge/config.json');
+const LOCAL_TOKEN = 'local-mode-token'; // Fixed token for local mode
 
 // 确保配置目录存在
 fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
@@ -22,6 +24,15 @@ function saveConfig(cfg) {
 }
 
 let config = loadConfig();
+
+// 本地模式：确保 localToken 存在
+if (LOCAL_MODE) {
+  config.localToken = LOCAL_TOKEN;
+  config.localMode = true;
+  saveConfig(config);
+  console.log('[Local] Local mode enabled, bound to 127.0.0.1');
+  console.log(`[Local] Token: ${LOCAL_TOKEN}`);
+}
 
 // 如果没有 apiToken，自动生成一个并持久化
 if (!config.apiToken) {
@@ -58,6 +69,8 @@ app.use((req, res, next) => {
   const auth = req.headers['authorization'] || '';
   const qtoken = req.query.token || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : qtoken;
+  // 本地模式：接受 local token 或 apiToken
+  if (LOCAL_MODE && token === LOCAL_TOKEN) return next();
   if (token && token === config.apiToken) return next();
   res.status(401).json({ error: 'Unauthorized. Pass Authorization: Bearer <apiToken>' });
 });
@@ -104,8 +117,13 @@ wss.on('connection', (ws, req) => {
   }
 
   // 方式2：session token（已配对，自动重连）
-  if (token && token === config.sessionToken) {
-    console.log('[WS] Chrome extension connected with session token');
+  if (token && (token === config.sessionToken || (LOCAL_MODE && token === LOCAL_TOKEN))) {
+    if (LOCAL_MODE && token === LOCAL_TOKEN) {
+      // 本地模式：直接用 local token 连接，跳过配对
+      console.log('[WS] Local mode connection accepted');
+    } else {
+      console.log('[WS] Chrome extension connected with session token');
+    }
     if (extensionSocket && extensionSocket.readyState === extensionSocket.OPEN) {
       extensionSocket.close(1000, 'New connection replacing old');
     }
@@ -311,8 +329,10 @@ app.get('/status', (req, res) => {
   res.json({
     connected: extensionSocket?.readyState === extensionSocket?.OPEN,
     pendingRequests: Object.keys(pendingRequests).length,
-    paired: !!config.sessionToken,
-    sessionCreatedAt: config.sessionCreatedAt || null
+    paired: !!config.sessionToken || LOCAL_MODE,
+    sessionCreatedAt: config.sessionCreatedAt || null,
+    mode: LOCAL_MODE ? 'local' : 'remote',
+    localToken: LOCAL_MODE ? LOCAL_TOKEN : undefined
   });
 });
 
@@ -332,7 +352,8 @@ function checkChallengeRate(ip) {
 // 生成 challenge（OpenClaw 调用，返回6位码）
 app.post('/pair/challenge', (req, res) => {
   const ip = req.ip || req.connection.remoteAddress || 'unknown';
-  if (!checkChallengeRate(ip)) {
+  // 本地模式跳过速率限制
+  if (!LOCAL_MODE && !checkChallengeRate(ip)) {
     return res.status(429).json({ error: 'Too many requests. Max 5 per minute.' });
   }
   const code = String(Math.floor(100000 + Math.random() * 900000));

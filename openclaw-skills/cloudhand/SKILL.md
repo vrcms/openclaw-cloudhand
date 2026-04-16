@@ -28,28 +28,60 @@ description: |
 **定时任务注意事项：**
 - 定时任务（cron）通常**不使用云手**，因为用户电脑可能关机
 - 定时任务应该用 `curl`/`requests` 直接抓取（服务端方式）
-- 只有实时交互任务才用云手（用户在线时）
+| ✅ **扩展已配对** | 扩展与 VPS bridge 完成配对（一次配对，长期有效） |
+
+---
+
+## 🚀 本地模式 (Local Mode) —— v2.6.0 新增
+
+当 AI 智能体（如 Qwen Code、Claude Code、Codex CLI）直接运行在用户本机时，推荐使用**本地模式**。
+
+**本地模式优势：**
+- **极低延迟**：指令直达本机 Chrome，不经过公网 VPS 中转。
+- **自动连接**：Chrome 扩展自动探测本机 9876 端口，发现 bridge 即刻连接，无需手动配置。
+- **免配对**：本机环境被视为受信任环境，跳过 6 位配对码流程，实现开箱即用。
+- **隐私安全**：所有数据流转仅限本机 `127.0.0.1`，不经过任何外部服务器。
+
+**如何开启：**
+1. **启动 Bridge**：双击运行项目根目录的 `start-local.bat` (Windows) 或执行 `bash start-local.sh` (Mac/Linux)。
+2. **扩展感应**：Chrome 扩展会自动显示「已连接本地模式」，Badge 变为蓝色。
 
 ---
 
 ## ⚡ 第一步：检查连接状态（每次使用前必做）
 
-**在执行任何浏览器操作之前**，必须先检查 bridge 是否已连接，扩展是否配对：
+**在执行任何浏览器操作之前**，必须先检查 bridge 是否已连接，以及当前处于什么模式：
 
 ```python
 import requests
 status = requests.get('http://127.0.0.1:9876/status').json()
 paired = status.get('paired', False)
 connected = status.get('extensionConnected', False)
+mode = status.get('mode', 'remote') # 'local' 或 'remote'
 ```
 
-### 未连接时的处理流程
+### 连接状态说明
 
-| 状态 | 原因 | 处理方式 |
-|------|------|----------|
-| `extensionConnected: false` | Chrome 扩展未安装或未连接 | 提示用户安装/重新配对 |
-| `paired: false` | 扩展已连接但未配对 | 生成配对码，指引用户配对 |
-| `paired: true` | ✅ 正常，可以操作 | 直接执行任务 |
+| 字段 | 状态 | 含义 | 处理方式 |
+|------|------|----------|----------|
+| `mode` | `local` | **本地模式**：AI 与 Chrome 都在本机 | ✅ 最佳状态，直接执行任务 |
+| `mode` | `remote` | **远程模式**：通过 VPS 中转控制 | ✅ 正常，需确保 `paired: true` |
+| `extensionConnected` | `false` | 扩展未运行或未连接 | 提示用户启动 Chrome 或检查 bridge |
+| `paired` | `false` | 远程模式下未配对 | 生成配对码，指引用户配对 |
+
+**探测逻辑建议：**
+
+```python
+if mode == 'local' and connected:
+    print("🚀 已进入本地直连模式，操作响应将非常迅速。")
+elif mode == 'remote' and connected and paired:
+    print("🌐 已连接远程 VPS Bridge。")
+elif not connected:
+    print("⚠️ 尚未连接你的 Chrome 浏览器。")
+    # ... 引导逻辑 ...
+```
+
+---
 
 **未连接时必须告知用户，不要静默失败：**
 

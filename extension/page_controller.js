@@ -106,6 +106,12 @@
       el.dispatchEvent(new Event('input', { bubbles: true }));
       // 逐字符输入（模拟真实输入）
       for (const char of text) {
+        if (char === '\n') {
+          ['keydown', 'keypress', 'keyup'].forEach(t => {
+            el.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+          });
+          continue;
+        }
         el.value += char;
         el.dispatchEvent(new KeyboardEvent('keydown', { key: char, bubbles: true }));
         el.dispatchEvent(new KeyboardEvent('keypress', { key: char, bubbles: true }));
@@ -135,6 +141,7 @@
           break;
 
         case 'input_text':
+        case 'input_text_element':
           sendResponse(inputText(payload.index, payload.text || ''));
           break;
 

@@ -2,58 +2,95 @@
 
 > Control your local Chrome browser from a remote OpenClaw AI agent.
 
-[![Version](https://img.shields.io/badge/version-2.4.6-blue.svg)](https://github.com/vrcms/openclaw-cloudhand)
+[![Version](https://img.shields.io/badge/version-2.6.0-blue.svg)](https://github.com/vrcms/openclaw-cloudhand)
 [![OpenClaw Plugin](https://img.shields.io/badge/openclaw-plugin-orange.svg)](https://openclaw.ai)
 
 English | **[中文文档](README.zh.md)**
 
 ## What is CloudHand?
 
-CloudHand is an OpenClaw plugin that bridges your remote AI agent (running on a VPS) to your local Chrome browser. It lets the AI:
+CloudHand is a bridge between AI agents and your Chrome browser. It supports two modes:
 
+1. **Remote Mode**: Connects to a remote OpenClaw AI assistant running on a VPS.
+2. **Local Mode (New)**: Connects to local AI agents running on your machine (e.g., Claude Code, Qwen Code, Codex CLI).
+
+It lets the AI:
 - Navigate to any URL
 - Click elements, type text, press keys
 - Execute arbitrary JavaScript (`eval`)
 - Read page content with DOM tree (`get_browser_state`)
-- **Smart element location** (`smart_locate`) — find elements by intent, no full DOM scan
+- **Smart element location** (`smart_locate`) — find elements by intent
 - **Ensure usable tab** (`ensure_tab`) — safely get a workable tab without opening extra windows
 - Control tabs, scroll, go back/forward
 
-This is especially useful when you need the AI to access websites that require login, bypass anti-bot measures, or interact with complex web UIs.
+## Architecture (v2.6.0+ Dual-Mode Parallel)
 
-## Architecture
+CloudHand now supports **simultaneous local and remote connections**. You can have OpenClaw on a VPS handling long-running tasks while your local Claude Code interacts with the browser in real-time.
 
 ```
+      [Remote Link]                      [Local Link]
 ┌─────────────────────┐         ┌──────────────────────────┐
-│   VPS (OpenClaw)    │         │   Your Computer          │
+│   VPS (Remote AI)   │         │   Your Computer (Local)   │
 │                     │         │                          │
-│  AI Agent           │         │  Chrome Browser          │
-│     ↓               │         │     ↑                    │
-│  cloudhand_*        │ ←WS──→  │  CloudHand Extension     │
-│  tools              │  9876   │  (Chrome Extension MV3)  │
-│     ↓               │         │                          │
-│  Bridge Server      │         └──────────────────────────┘
-│  (server.js)        │
-└─────────────────────┘
+│  AI Agent (Remote)  │         │  AI Agent (Local)        │
+│     ↓               │         │  (Claude / Gemini / Qwen)│
+│  Bridge Server      │ ──WS──┐ │          ↓               │
+│  (server.js)        │  9876 │ │  Chrome Browser (Local)  │
+└─────────────────────┘       │ │          ↑               │
+                              └─┼─→ CloudHand Ext (v2.6)   │
+                                │          ↑               │
+                                │  Bridge Server (Local)   │
+                                │  (server.js --local)     │
+                                └──────────────────────────┘
 ```
 
-The Chrome extension **connects outbound** to your VPS — no port forwarding needed on your local machine.
+## 🌟 Key Features
 
-## Installation
+- **Dual-Mode Parallel**: True simultaneous control from local and remote AI agents.
+- **Self-Contained Skills**: AI skill directories include full runtime environments.
+- **Zero Latency**: Local link response times in milliseconds.
+- **Pairing-Free**: Local mode auto-detection — no 6-digit codes needed.
+- **Expert APIs**: Built-in `ensure_tab`, `smart_locate`, `cdp_click`, and AX tree support.
 
-### VPS Side (one command)
+## 📦 Installation & Setup
 
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/vrcms/openclaw-cloudhand/main/install.sh)
-```
+CloudHand supports two operating modes. Choose the one that fits your use case:
 
-This will:
-1. Install the plugin to `~/.openclaw/extensions/cloudhand/`
-2. Install npm dependencies
-3. Register the plugin with OpenClaw
-4. Restart the Gateway
+---
 
-### Chrome Extension
+### Scenario A: Remote VPS Mode (For OpenClaw Users)
+**Use case**: Your AI agent runs on a remote VPS and needs to control Chrome on your local machine.
+
+1. **One-click Install on VPS**:
+   ```bash
+   bash <(curl -fsSL https://raw.githubusercontent.com/vrcms/openclaw-cloudhand/main/cloudhand-bridge/install.sh)
+   ```
+2. **Local Configuration**:
+   - Download and install the Chrome extension (see "Extension Download" below).
+   - Get a 6-digit pairing code from your AI and pair the extension.
+3. **Done**: Your AI agent can now control your browser via WebSocket.
+
+---
+
+### Scenario B: Local Mode (For Claude Code / Gemini / Qwen Users)
+**Use case**: Your AI agent runs directly on your local machine and needs high-speed control over Chrome.
+
+1. **Get the Code**:
+   ```bash
+   git clone https://github.com/vrcms/openclaw-cloudhand.git
+   cd openclaw-cloudhand
+   ```
+2. **Start Local Bridge**:
+   - **Windows**: Double-click `cloudhand-bridge/start-local.bat`.
+   - **Mac/Linux**: Run `bash cloudhand-bridge/start-local.sh`.
+3. **AI Agent Setup**:
+   - Provide the `ai-skills/cloudhand-local` directory to your AI agent.
+   - The agent will follow the skill spec to detect `127.0.0.1:9876` and get a token.
+4. **Done**: Your local AI will control Chrome with zero latency. No pairing required.
+
+---
+
+## 🧩 Chrome Extension Setup (Common Step)
 
 1. **Get a secure download link from your AI agent:**
 

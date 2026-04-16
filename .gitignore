@@ -1,3 +1,25 @@
+# Dependencies
 node_modules/
+
+# Build and Packaging
 extension.zip
 extension/config.js
+
+# AI Agent Private Data (Local Only)
+.gemini/
+.qwen/
+.claude/
+.codebuddy/
+.codex/
+.opencode/
+.qoder/
+.agent/
+
+# Logs and Temporaries
+*.log
+backupfiles/
+openspec/
+
+# System Files
+.DS_Store
+Thumbs.db

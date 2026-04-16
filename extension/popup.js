@@ -1,99 +1,82 @@
+// CloudHand Popup v2.6.0
 import { CLOUDHAND_CONFIG } from './config.js';
-const DEFAULT_SERVER_URL = CLOUDHAND_CONFIG.wsUrl;
 
-async function getStorage(keys) {
-  return new Promise(r => chrome.storage.local.get(keys, r));
-}
-async function removeStorage(keys) {
-  return new Promise(r => chrome.storage.local.remove(keys, r));
-}
-
-const dot = document.getElementById('dot');
-const statusText = document.getElementById('statusText');
-const connectedView = document.getElementById('connectedView');
-const pairView = document.getElementById('pairView');
-const serverUrlEl = document.getElementById('serverUrl');
+const localDot = document.getElementById('localDot');
+const localText = document.getElementById('localText');
+const remoteDot = document.getElementById('remoteDot');
+const remoteText = document.getElementById('remoteText');
+const remoteUrl = document.getElementById('remoteUrl');
+const remotePairView = document.getElementById('remotePairView');
+const remoteConnectedView = document.getElementById('remoteConnectedView');
 const codeInput = document.getElementById('codeInput');
 const pairBtn = document.getElementById('pairBtn');
 const pairMsg = document.getElementById('pairMsg');
+const revokeBtn = document.getElementById('revokeBtn');
 
-function showMsg(type, text) {
-  pairMsg.className = 'msg ' + type;
-  pairMsg.textContent = text;
-}
+function updateStatus() {
+  chrome.runtime.sendMessage({ type: 'getStatus' }, (status) => {
+    if (!status) return;
 
-async function init() {
-  const data = await getStorage(['sessionToken', 'serverUrl']);
+    // 更新本地状态
+    localDot.className = 'dot ' + (status.local.connected ? 'connected' : 'disconnected');
+    localText.textContent = status.local.connected ? '已就绪 ✓' : '未运行';
 
-  // 获取实际连接状态
-  chrome.runtime.sendMessage({ type: 'getStatus' }, (resp) => {
-    const connected = resp?.connected;
+    // 更新远程状态
+    remoteDot.className = 'dot ' + (status.remote.connected ? 'connected' : 'disconnected');
+    remoteText.textContent = status.remote.connected ? '已连接 ✓' : (status.remote.paired ? '连接中...' : '未配对');
+    remoteUrl.textContent = status.remote.url || CLOUDHAND_CONFIG.wsUrl;
 
-    if (data.sessionToken) {
-      // 已配对
-      dot.className = 'dot ' + (connected ? 'connected' : 'disconnected');
-      statusText.textContent = connected ? '已连接 ✓' : '已配对，连接中...';
-      serverUrlEl.textContent = data.serverUrl || DEFAULT_SERVER_URL;
-      connectedView.style.display = 'block';
-      pairView.style.display = 'none';
+    // 切换界面
+    if (status.remote.paired) {
+      remotePairView.style.display = 'none';
+      remoteConnectedView.style.display = 'block';
     } else {
-      // 未配对
-      dot.className = 'dot disconnected';
-      statusText.textContent = '未连接';
-      connectedView.style.display = 'none';
-      pairView.style.display = 'block';
-      setTimeout(() => codeInput.focus(), 100);
+      remotePairView.style.display = 'block';
+      remoteConnectedView.style.display = 'none';
     }
   });
 }
 
-// 配对
-pairBtn.addEventListener('click', async () => {
+// 初始更新
+updateStatus();
+// 每3秒刷新一次界面状态
+setInterval(updateStatus, 3000);
+
+// 处理远程配对
+pairBtn.addEventListener('click', () => {
   const code = codeInput.value.trim();
-  if (!code || code.length !== 6 || !/^\d{6}$/.test(code)) {
-    codeInput.classList.add('error');
-    showMsg('error', '请输入6位数字验证码');
+  if (code.length !== 6) {
+    pairMsg.textContent = '请输入6位验证码';
+    pairMsg.className = 'msg error';
     return;
   }
-  codeInput.classList.remove('error');
-
-  const data = await getStorage(['serverUrl']);
-  const serverUrl = data.serverUrl || DEFAULT_SERVER_URL;
 
   pairBtn.disabled = true;
   pairBtn.textContent = '验证中...';
-  showMsg('info', '正在连接服务器...');
-
-  chrome.runtime.sendMessage({ type: 'pair', serverUrl, challenge: code }, async (resp) => {
+  
+  chrome.runtime.sendMessage({ 
+    type: 'pair', 
+    serverUrl: remoteUrl.textContent, 
+    challenge: code 
+  }, (resp) => {
     pairBtn.disabled = false;
     pairBtn.textContent = '配对连接';
-
+    
     if (resp?.success) {
-      await new Promise(r => chrome.storage.local.set({
-        sessionToken: resp.sessionToken,
-        serverUrl,
-        sessionCreatedAt: new Date().toISOString()
-      }, r));
-      showMsg('success', '✅ 配对成功！');
-      setTimeout(() => init(), 800);
+      pairMsg.textContent = '配对成功！';
+      pairMsg.className = 'msg success';
+      setTimeout(updateStatus, 1000);
     } else {
-      showMsg('error', '❌ ' + (resp?.error || '验证码错误或已过期'));
-      codeInput.select();
+      pairMsg.textContent = resp?.error || '配对失败';
+      pairMsg.className = 'msg error';
     }
   });
 });
 
-// 按 Enter 触发配对
-codeInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') pairBtn.click();
+// 断开远程
+revokeBtn.addEventListener('click', () => {
+  if (!confirm('确认断开远程 VPS 连接？')) return;
+  chrome.runtime.sendMessage({ type: 'revoke' }, () => {
+    updateStatus();
+  });
 });
-
-// 断开连接
-document.getElementById('revokeBtn').addEventListener('click', async () => {
-  if (!confirm('确认断开连接？')) return;
-  await removeStorage(['sessionToken', 'sessionCreatedAt']);
-  chrome.runtime.sendMessage({ type: 'revoke' });
-  init();
-});
-
-init();

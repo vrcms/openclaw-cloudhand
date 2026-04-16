@@ -4,56 +4,62 @@
   <meta charset="UTF-8">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { width: 260px; padding: 16px; font-family: -apple-system, sans-serif; font-size: 13px; background: #fff; }
-    .header { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
-    .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    body { width: 280px; padding: 16px; font-family: -apple-system, sans-serif; font-size: 13px; background: #f9fafb; color: #111; }
+    
+    .section { background: white; border-radius: 10px; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+    .section-title { font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+    
+    .status-row { display: flex; align-items: center; gap: 8px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
     .dot.connected { background: #22c55e; box-shadow: 0 0 0 3px #dcfce7; }
     .dot.disconnected { background: #ef4444; box-shadow: 0 0 0 3px #fee2e2; }
-    .dot.connecting { background: #f59e0b; animation: pulse 1s infinite; }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
-    .status-text { font-weight: 600; color: #111; }
-    .sub { font-size: 11px; color: #9ca3af; margin-bottom: 14px; }
+    
+    .status-text { font-weight: 600; flex-grow: 1; }
+    .url-text { font-size: 11px; color: #9ca3af; margin-top: 4px; word-break: break-all; }
 
-    /* 已连接状态 */
-    #connectedView { display: none; }
-    .server-url { font-size: 11px; color: #6b7280; background: #f3f4f6; padding: 6px 8px; border-radius: 6px; margin-bottom: 10px; word-break: break-all; }
-    .btn { width: 100%; padding: 8px; border: none; border-radius: 7px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+    /* 配对界面 */
+    .pair-area { margin-top: 10px; padding-top: 10px; border-top: 1px dashed #e5e7eb; }
+    .code-input { width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 18px; text-align: center; letter-spacing: 4px; font-weight: 700; outline: none; }
+    .btn { width: 100%; padding: 8px; border: none; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; margin-top: 8px; }
+    .btn-primary { background: #6366f1; color: white; }
     .btn-danger { background: #fee2e2; color: #ef4444; }
-    .btn-danger:hover { background: #fecaca; }
-
-    /* 未连接状态 */
-    #pairView { display: none; }
-    .pair-hint { font-size: 12px; color: #6b7280; margin-bottom: 10px; line-height: 1.5; }
-    .code-input { width: 100%; padding: 10px; border: 1.5px solid #e5e7eb; border-radius: 8px; font-size: 22px; text-align: center; letter-spacing: 6px; font-weight: 700; outline: none; transition: border-color 0.2s; }
-    .code-input:focus { border-color: #6366f1; }
-    .code-input.error { border-color: #ef4444; }
-    .btn-primary { background: #6366f1; color: white; margin-top: 10px; }
-    .btn-primary:hover { background: #4f46e5; }
-    .btn-primary:disabled { background: #a5b4fc; cursor: not-allowed; }
-    .msg { font-size: 12px; margin-top: 8px; padding: 7px 10px; border-radius: 6px; display: none; }
-    .msg.success { background: #dcfce7; color: #166534; display: block; }
-    .msg.error { background: #fee2e2; color: #991b1b; display: block; }
-    .msg.info { background: #e0e7ff; color: #3730a3; display: block; }
+    
+    .msg { font-size: 11px; margin-top: 6px; text-align: center; }
+    .msg.error { color: #ef4444; }
+    .msg.success { color: #22c55e; }
   </style>
 </head>
 <body>
-  <div class="header">
-    <div class="dot connecting" id="dot"></div>
-    <span class="status-text" id="statusText">检查中...</span>
+  <!-- 本地连接 -->
+  <div class="section" id="localSection">
+    <div class="section-title">🚀 本地模式 (Local)</div>
+    <div class="status-row">
+      <div class="dot" id="localDot"></div>
+      <span class="status-text" id="localText">检查中...</span>
+    </div>
+    <div class="url-text">127.0.0.1:9876</div>
   </div>
 
-  <!-- 已连接 -->
-  <div id="connectedView">
-    <div class="server-url" id="serverUrl"></div>
-    <button class="btn btn-danger" id="revokeBtn">断开连接 / 重新配对</button>
-  </div>
+  <!-- 远程连接 -->
+  <div class="section" id="remoteSection">
+    <div class="section-title">🌐 远程 VPS (Remote)</div>
+    <div class="status-row">
+      <div class="dot" id="remoteDot"></div>
+      <span class="status-text" id="remoteText">检查中...</span>
+    </div>
+    <div class="url-text" id="remoteUrl">-</div>
 
-  <!-- 未连接 / 配对 -->
-  <div id="pairView">
-    <p class="pair-hint">向 AI 说「帮我连接浏览器」获取6位验证码</p>
-    <input class="code-input" id="codeInput" type="text" maxlength="6" placeholder="000000" inputmode="numeric" />
-    <button class="btn btn-primary" id="pairBtn">配对连接</button>
-    <div class="msg" id="pairMsg"></div>
+    <!-- 远程未连接时的配对入口 -->
+    <div id="remotePairView" style="display: none;" class="pair-area">
+      <input class="code-input" id="codeInput" type="text" maxlength="6" placeholder="000000" />
+      <button class="btn btn-primary" id="pairBtn">配对连接</button>
+      <div class="msg" id="pairMsg"></div>
+    </div>
+
+    <!-- 远程已连接时的操作 -->
+    <div id="remoteConnectedView" style="display: none;" class="pair-area">
+      <button class="btn btn-danger" id="revokeBtn">断开远程连接</button>
+    </div>
   </div>
 
   <script type="module" src="popup.js"></script>

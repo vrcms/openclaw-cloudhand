@@ -1,9 +1,9 @@
 {
   "id": "cloudhand",
   "name": "CloudHand",
-  "description": "Control your local Chrome browser from remote OpenClaw. Bridges AI to your real browser via WebSocket.",
-  "version": "1.1.0",
-  "skills": ["./skills"],
+  "description": "Control your local Chrome browser. Bridges AI to your real browser via WebSocket.",
+  "version": "2.6.0",
+  "skills": ["./openclaw-skills"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -15,6 +15,10 @@
       "autoStart": {
         "type": "boolean",
         "description": "Auto-start the bridge server when Gateway starts (default: true)"
+      },
+      "localMode": {
+        "type": "boolean",
+        "description": "Enable local mode (binds to 127.0.0.1, skips pairing) (default: false)"
       }
     }
   },
@@ -26,6 +30,10 @@
     "autoStart": {
       "label": "Auto Start",
       "help": "Automatically start the bridge server when OpenClaw Gateway starts."
+    },
+    "localMode": {
+      "label": "Enable Local Mode",
+      "help": "Enable local mode to bind bridge to 127.0.0.1 and skip pairing. Ideal for local AI agents."
     }
   }
 }

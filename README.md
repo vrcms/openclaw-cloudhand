@@ -1,6 +1,6 @@
 # CloudHand (云手)
 
-> Control your local Chrome browser from a remote OpenClaw AI agent.
+> High-speed Chrome control for AI agents (Local/Remote).
 
 [![Version](https://img.shields.io/badge/version-2.6.0-blue.svg)](https://github.com/vrcms/openclaw-cloudhand)
 [![OpenClaw Plugin](https://img.shields.io/badge/openclaw-plugin-orange.svg)](https://openclaw.ai)
@@ -9,207 +9,107 @@ English | **[中文文档](README.zh.md)**
 
 ## What is CloudHand?
 
-CloudHand is a bridge between AI agents and your Chrome browser. It supports two modes:
+CloudHand is a bridge between AI agents and your Chrome browser. It features a **Dual-Mode Parallel Architecture**:
 
-1. **Remote Mode**: Connects to a remote OpenClaw AI assistant running on a VPS.
-2. **Local Mode (New)**: Connects to local AI agents running on your machine (e.g., Claude Code, Qwen Code, Codex CLI).
+1. **Remote Mode**: Connects to a remote OpenClaw AI assistant on a VPS.
+2. **Local Mode (New)**: Connects to local AI agents (e.g., Claude Code, Gemini, Qwen).
 
-It lets the AI:
-- Navigate to any URL
-- Click elements, type text, press keys
-- Execute arbitrary JavaScript (`eval`)
-- Read page content with DOM tree (`get_browser_state`)
-- **Smart element location** (`smart_locate`) — find elements by intent
-- **Ensure usable tab** (`ensure_tab`) — safely get a workable tab without opening extra windows
-- Control tabs, scroll, go back/forward
+## 🌟 Key Features (v2.6.0)
 
-## Architecture (v2.6.0+ Dual-Mode Parallel)
-
-CloudHand now supports **simultaneous local and remote connections**. You can have OpenClaw on a VPS handling long-running tasks while your local Claude Code interacts with the browser in real-time.
-
-```
-      [Remote Link]                      [Local Link]
-┌─────────────────────┐         ┌──────────────────────────┐
-│   VPS (Remote AI)   │         │   Your Computer (Local)   │
-│                     │         │                          │
-│  AI Agent (Remote)  │         │  AI Agent (Local)        │
-│     ↓               │         │  (Claude / Gemini / Qwen)│
-│  Bridge Server      │ ──WS──┐ │          ↓               │
-│  (server.js)        │  9876 │ │  Chrome Browser (Local)  │
-└─────────────────────┘       │ │          ↑               │
-                              └─┼─→ CloudHand Ext (v2.6)   │
-                                │          ↑               │
-                                │  Bridge Server (Local)   │
-                                │  (server.js --local)     │
-                                └──────────────────────────┘
-```
-
-## 🌟 Key Features
-
-- **Dual-Mode Parallel**: True simultaneous control from local and remote AI agents.
-- **Self-Contained Skills**: AI skill directories include full runtime environments.
-- **Zero Latency**: Local link response times in milliseconds.
-- **Pairing-Free**: Local mode auto-detection — no 6-digit codes needed.
-- **Expert APIs**: Built-in `ensure_tab`, `smart_locate`, `cdp_click`, and AX tree support.
-
-## 📦 Installation & Setup
-
-CloudHand supports two operating modes. Choose the one that fits your use case:
+- **Dual-Mode Parallel**: Simultaneous control from local and remote AI agents.
+- **CLI Commander**: Built-in `ch.js` tool supporting semantic chaining (e.g., `type {search_box} hello`).
+- **Self-Learning Knowledge Base**: Automatically builds site-specific landmarks in `./.data-browser-knowledge/`.
+- **Expert APIs**: Native support for `ensure_tab`, `smart_locate`, and CDP-based trusted clicks.
+- **Pairing-Free**: Auto-detection for local mode — no 6-digit codes required.
 
 ---
 
-### Scenario A: Remote VPS Mode (For OpenClaw Users)
-**Use case**: Your AI agent runs on a remote VPS and needs to control Chrome on your local machine.
+## 🛠️ Expert CLI Tool (ch.js)
 
+CloudHand includes a powerful CLI tool `cloudhand-bridge/ch.js` to simplify AI interactions:
+
+```bash
+# 1. Semantic Batch Mode (Recommended: Handles TabIDs & Locating automatically)
+node cloudhand-bridge/ch batch "ensure_tab; navigate google.com; type {search_box} openclaw\n"
+
+# 2. Quick Search (Direct access with retries and summarization)
+node cloudhand-bridge/ch quick_search "https://www.google.com/search?q=openclaw"
+
+# 3. Cognitive Learning (Extract page skeleton for AI analysis & archiving)
+node cloudhand-bridge/ch learn
+```
+
+---
+
+## 📦 Installation & Setup
+
+Choose the scenario that fits your needs:
+
+### Scenario A: Remote VPS Mode (For OpenClaw Users)
 1. **One-click Install on VPS**:
    ```bash
    bash <(curl -fsSL https://raw.githubusercontent.com/vrcms/openclaw-cloudhand/main/cloudhand-bridge/install.sh)
    ```
-2. **Local Configuration**:
-   - Download and install the Chrome extension (see "Extension Download" below).
-   - Get a 6-digit pairing code from your AI and pair the extension.
-3. **Done**: Your AI agent can now control your browser via WebSocket.
+2. **Setup**: Follow the "Chrome Extension Setup" section below.
 
----
-
-### Scenario B: Local Mode (For Claude Code / Gemini / Qwen Users)
-**Use case**: Your AI agent runs directly on your local machine and needs high-speed control over Chrome.
-
-1. **Get the Code**:
-   ```bash
-   git clone https://github.com/vrcms/openclaw-cloudhand.git
-   cd openclaw-cloudhand
-   ```
-2. **Start Local Bridge**:
-   - **Windows**: Double-click `cloudhand-bridge/start-local.bat`.
-   - **Mac/Linux**: Run `bash cloudhand-bridge/start-local.sh`.
-3. **AI Agent Setup**:
-   - Provide the `ai-skills/cloudhand-local` directory to your AI agent.
-   - The agent will follow the skill spec to detect `127.0.0.1:9876` and get a token.
-4. **Done**: Your local AI will control Chrome with zero latency. No pairing required.
+### Scenario B: Local Mode (For Local AI Agents)
+1. **Get Code**: `git clone` this repository.
+2. **Start Bridge**: Double-click `cloudhand-bridge/start-local.bat`.
+3. **AI Setup**: Provide the `./ai-skills/cloudhand-local` directory to your AI agent.
 
 ---
 
 ## 🧩 Chrome Extension Setup (Common Step)
 
-1. **Get a secure download link from your AI agent:**
+The CloudHand extension is required for both operating modes.
 
-   Ask the agent: "给我云手的下载链接" ("Give me the CloudHand download link")
+1. **Get Download Link:**
+   - **Remote Mode**: Ask your AI assistant: "Give me the download link". It will generate a 120s temporary link: `http://YOUR_VPS:9876/download-ext?t=xxx`.
+   - **Local Mode**: Simply use the `extension/` folder in this repository.
 
-   The agent will generate a one-time link valid for **120 seconds**:
-   ```
-   http://YOUR_VPS_IP:9876/download-ext?t=<token>
-   ```
-   > ⚠️ The link expires in 120 seconds. Download immediately.
+2. **Load in Chrome:**
+   - Open Chrome and navigate to `chrome://extensions/`.
+   - Enable **"Developer mode"** in the top right corner.
+   - Click **"Load unpacked"** in the top left.
+   - Select the **`extension`** folder from this project.
 
-2. Unzip and load in Chrome:
-   - Open `chrome://extensions/`
-   - Enable **Developer mode**
-   - Click **Load unpacked** → select the `extension/` folder
-   - (The extension includes `config.js` with your VPS IP pre-configured)
+3. **Pair with AI (Remote Mode only):**
+   - Ask your AI: "Give me the pairing code". You will receive a **6-digit code** (valid for 120s).
+   - Click the CloudHand icon in your Chrome toolbar.
+   - Enter the code and click **"Pair & Connect"**.
+   - ✅ When the status changes to **"Connected"**, you are ready.
 
-3. **Pair with your AI agent:**
+> 💡 **Pro Tip**: Pairing info is stored locally. You don't need to re-pair unless you reinstall the extension. Local mode auto-detects `127.0.0.1` and requires no pairing code.
 
-   Ask the agent: "给我云手的配对码" ("Give me the pairing code")
+---
 
-   A 6-digit code will appear, valid for **120 seconds**. Enter it in the extension popup.
-
-## Key Features
-
-### DOM Tree Navigation
-
-Get a structured, interactive element tree of the current page:
-
-```python
-# Get browser state (interactive elements with indices)
-state = requests.post('http://VPS:9876/get_browser_state', headers=H, json={'tabId': tid}).json()
-# Returns: [1]<button>Search</button>  [2]<input placeholder="keyword">
-
-# Click by index
-requests.post('http://VPS:9876/click_element', headers=H, json={'tabId': tid, 'index': 2})
-
-# Type by index
-requests.post('http://VPS:9876/input_text_element', headers=H, json={'tabId': tid, 'index': 2, 'text': 'openclaw'})
-```
-
-### Smart Locate (v2.4.5+)
-
-Find elements by natural language intent — no full DOM scan needed:
-
-```python
-# Find search box
-r = requests.post('http://VPS:9876/smart_locate', headers=H, json={
-    'tabId': tid,
-    'intent': '搜索'  # or: 按钮 / 登录 / 输入 / 链接 / 内容 / '' (all key elements)
-}).json()
-idx = r['matches'][0]['browserStateIndex']  # Use directly with click_element
-```
-
-Supported intents: `搜索/search`, `按钮/button`, `登录/login`, `输入/input`, `链接/link`, `内容/content`, `''` (overview)
-
-### Ensure Tab (v2.4.6+)
-
-Safely get a usable agent tab — works with BitBrowser and other non-standard environments:
-
-```python
-# Always use this instead of new_tab/new_window
-r = requests.post('http://VPS:9876/ensure_tab', headers=H, json={}).json()
-tid = r['tabId']  # Guaranteed to be a usable tab
-# If it's a browser internal page, navigate first then reuse this tid
-```
-
-Logic: reuse existing agent tab → open new tab in existing window → only create new window if no agent window exists.
-
-## API Reference
+## Core APIs
 
 | Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/status` | GET | Bridge status (paired, version, tabId) |
-| `/pair/challenge` | POST | Generate 6-digit pairing code (120s) |
-| `/agent_windows` | GET | List agent-owned window IDs |
-| `/ensure_tab` | POST | Get/create a usable agent tab |
-| `/tabs` | GET | List all open tabs |
-| `/navigate` | POST | Navigate to URL |
-| `/eval` | POST | Execute JavaScript |
-| `/get_browser_state` | POST | Get DOM tree with interactive element indices |
-| `/click_element` | POST | Click element by DOM index |
-| `/input_text_element` | POST | Type into element by DOM index |
-| `/smart_locate` | POST | Find elements by natural language intent |
-| `/click` | POST | Click by CSS selector |
-| `/type` | POST | Type text into element |
-| `/scroll` | POST | Scroll page |
-| `/go_back` | POST | Navigate back |
-| `/go_forward` | POST | Navigate forward |
-| `/page_info` | GET | Current page title and URL |
-| `/focus_tab` | POST | Focus a specific tab |
-| `/close_tab` | POST | Close a tab |
-| `/new_tab` | POST | Open new tab in window |
-| `/download-ext` | GET | One-time extension download (token required) |
-
-## Security
-
-- **Pairing codes** are 6-digit, expire in **120 seconds**, single-use, rate-limited
-- **Download links** are one-time tokens, expire in **120 seconds**
-- **Session tokens** are 128-bit random, stored in Chrome extension storage
-- **Agent isolation**: the extension only tracks agent-created windows; user windows are never recorded
-- Bearer token authentication on all API calls
+|------|------|------|
+| `/status` | GET | Check dual-mode connection status |
+| `/token` | GET | Get local API Token (127.0.0.1 only) |
+| `/ensure_tab` | POST | Get/Create a dedicated agent tab |
+| `/smart_locate` | POST | Locate elements by intent (e.g., "search box") |
+| `/navigate` | POST | Navigate to target URL |
+| `/get_browser_state` | POST | Get interactive element tree and indices |
+| `/click_element` | POST | Click by index (Semantic: `click {target}`) |
+| `/input_text_element` | POST | Input by index (Semantic: `type {target} text\n`) |
+| `/get_ax_tree` | POST | Get full Accessibility Tree |
+| `/eval` | POST | Execute custom JavaScript |
 
 ## Development
 
 ```bash
-# Clone
-git clone https://github.com/vrcms/openclaw-cloudhand.git
-cd openclaw-cloudhand
-
 # Install deps
 npm install
 
-# Run bridge server directly
-node server.js
+# Run bridge (Local Mode)
+node cloudhand-bridge/server.js --local
 
-# Load extension in Chrome (Developer mode → Load unpacked → extension/)
+# Test commands
+node cloudhand-bridge/ch help
 ```
 
 ## License
-
 MIT

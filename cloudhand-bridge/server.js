@@ -1,15 +1,16 @@
 const express = require('express');
-const { WebSocketServer } = require('ws');
+const { WebSocketServer, WebSocket } = require('ws');
 const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { chromium } = require('playwright-core');
 
 const PORT = process.env.PORT || 9876;
 const LOCAL_MODE = process.argv.includes('--local');
 const HOST = LOCAL_MODE ? '127.0.0.1' : (process.env.HOST || '0.0.0.0');
-const CONFIG_FILE = path.join(process.env.HOME || '/root', '.openclaw/chrome-bridge/config.json');
-const LOCAL_TOKEN = 'local-mode-token'; // Fixed token for local mode
+const CONFIG_FILE = path.join(process.env.HOME || process.env.USERPROFILE || '/root', '.openclaw/chrome-bridge/config.json');
+const LOCAL_TOKEN = 'local-mode-token';
 
 // 确保配置目录存在
 fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
@@ -25,29 +26,26 @@ function saveConfig(cfg) {
 
 let config = loadConfig();
 
-// 本地模式：确保 localToken 存在
+// 本地模式初始化
 if (LOCAL_MODE) {
   config.localToken = LOCAL_TOKEN;
   config.localMode = true;
   saveConfig(config);
-  console.log('[Local] Local mode enabled, bound to 127.0.0.1');
+  console.log('[Local] 本地模式已启用，绑定到 127.0.0.1');
   console.log(`[Local] Token: ${LOCAL_TOKEN}`);
 }
 
-// 如果没有 apiToken，自动生成一个并持久化
+// 自动生成 apiToken
 if (!config.apiToken) {
   config.apiToken = crypto.randomBytes(32).toString('hex');
   saveConfig(config);
-  console.log('[Auth] Generated new apiToken');
+  console.log('[Auth] 已生成新的 apiToken');
 }
-
-// 内存中的 challenge（30秒有效，一次性）
-let pendingChallenge = null; // { code, expiresAt }
 
 const app = express();
 app.use(express.json());
 
-// CORS：只允许 Chrome 扩展和本地访问
+// CORS
 app.use((req, res, next) => {
   const origin = req.headers.origin || '';
   const allowed = origin.startsWith('chrome-extension://') || origin === '' || origin.includes('127.0.0.1') || origin.includes('localhost');
@@ -60,127 +58,162 @@ app.use((req, res, next) => {
   next();
 });
 
-// 免鉴权端点白名单
-const PUBLIC_PATHS = new Set(['/status', '/config', '/pair/challenge', '/pair/revoke', '/token', '/download-ext', '/download-termhand']);
+// 免鉴权白名单
+const PUBLIC_PATHS = new Set(['/status', '/config', '/pair/challenge', '/token']);
 
-// Bearer Token 鉴权中间件
+// Bearer Token 鉴权
 app.use((req, res, next) => {
   if (PUBLIC_PATHS.has(req.path)) return next();
   const auth = req.headers['authorization'] || '';
   const qtoken = req.query.token || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : qtoken;
-  // 本地模式：接受 local token 或 apiToken
   if (LOCAL_MODE && token === LOCAL_TOKEN) return next();
   if (token && token === config.apiToken) return next();
   res.status(401).json({ error: 'Unauthorized. Pass Authorization: Bearer <apiToken>' });
 });
+
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({ noServer: true });
+const cdpWss = new WebSocketServer({ noServer: true });
+const cdpClients = new Set(); // Playwright 等 CDP 客户端
 
+// 路由 WebSocket 升级请求
+server.on('upgrade', (req, socket, head) => {
+  const pathname = new URL(req.url, 'http://localhost').pathname;
+  if (pathname === '/ws') {
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  } else if (pathname === '/cdp') {
+    cdpWss.handleUpgrade(req, socket, head, (ws) => cdpWss.emit('connection', ws, req));
+  } else {
+    socket.destroy();
+  }
+});
+
+// ── CDP 协议状态 ──────────────────────────────────
 let extensionSocket = null;
-let pendingRequests = {};
+let pendingRequests = {};   // id -> { resolve, reject, timeout }
+let nextCdpId = 1;
 
-// ── WebSocket 连接处理 ──────────────────────────────────
+// 已 attach 的 tab 状态（由扩展通过 CDP 事件通知）
+// sessionId -> { targetId, url, title }
+const attachedSessions = new Map();
+// 当前 agent 使用的 sessionId
+let agentSessionId = null;
+
+// 所有已知的浏览器 tab（不限于已 attach 的，由扩展 target 事件维护）
+// targetId -> { tabId, url, title, type }
+const knownTargets = new Map();
+
+// ── WebSocket 连接处理（适配新 CDP 扩展） ──────────────
 wss.on('connection', (ws, req) => {
   const params = new URL(req.url, 'http://localhost').searchParams;
   const token = params.get('token');
-  const challenge = params.get('challenge');
 
-  // 方式1：challenge 配对（首次连接）
-  if (challenge) {
-    if (!pendingChallenge || Date.now() > pendingChallenge.expiresAt) {
-      ws.close(1008, 'Challenge expired or not found');
-      console.log('[WS] Rejected: challenge expired');
-      return;
-    }
-    if (challenge !== pendingChallenge.code) {
-      ws.close(1008, 'Invalid challenge');
-      console.log('[WS] Rejected: invalid challenge');
-      return;
-    }
-    // challenge 验证通过，生成 session token
-    const sessionToken = crypto.randomBytes(64).toString('hex');
-    config.sessionToken = sessionToken;
-    config.sessionCreatedAt = new Date().toISOString();
-    saveConfig(config);
-    pendingChallenge = null; // 一次性，用完作废
-    console.log('[WS] Challenge verified, session token generated');
-    // 把 session token 发给扩展
-    ws.send(JSON.stringify({ type: 'paired', sessionToken }));
-    // 关闭旧连接
-    if (extensionSocket && extensionSocket.readyState === extensionSocket.OPEN) {
-      extensionSocket.close(1000, 'New connection replacing old');
-    }
-    extensionSocket = ws;
-    setupSocket(ws);
+  // 验证 token
+  if (!token || !(token === LOCAL_TOKEN || token === config.sessionToken || token === config.apiToken)) {
+    ws.close(1008, 'Unauthorized');
+    console.log('[WS] 拒绝未授权连接');
     return;
   }
 
-  // 方式2：session token（已配对，自动重连）
-  if (token && (token === config.sessionToken || (LOCAL_MODE && token === LOCAL_TOKEN))) {
-    if (LOCAL_MODE && token === LOCAL_TOKEN) {
-      // 本地模式：直接用 local token 连接，跳过配对
-      console.log('[WS] Local mode connection accepted');
-    } else {
-      console.log('[WS] Chrome extension connected with session token');
-    }
-    if (extensionSocket && extensionSocket.readyState === extensionSocket.OPEN) {
-      extensionSocket.close(1000, 'New connection replacing old');
-    }
-    extensionSocket = ws;
-    // 重连成功，取消清空定时器
-    if (agentWindows._clearTimer) {
-      clearTimeout(agentWindows._clearTimer);
-      agentWindows._clearTimer = null;
-      console.log('[Agent] Browser reconnected, cancelled window clear timer');
-    }
-    setupSocket(ws);
-    return;
-  }
+  console.log('[WS] 扩展已连接');
 
-  ws.close(1008, 'Unauthorized');
-  console.log('[WS] Rejected unauthorized connection');
+  // 关闭旧连接
+  if (extensionSocket && extensionSocket.readyState === extensionSocket.OPEN) {
+    extensionSocket.close(1000, 'New connection replacing old');
+  }
+  extensionSocket = ws;
+
+  // 发送 connect.challenge 事件触发扩展握手
+  ws.send(JSON.stringify({
+    type: 'event',
+    event: 'connect.challenge',
+    payload: { nonce: '' }
+  }));
+
+  setupSocket(ws);
 });
 
 function setupSocket(ws) {
   ws.on('message', (data) => {
     try {
       const msg = JSON.parse(data);
-      const { requestId, result, error, type, windowId, tabId } = msg;
-      // 处理扩展主动推送的事件
-      if (type === 'window_removed' && windowId) {
-        if (agentWindows.has(windowId)) {
-          agentWindows.delete(windowId);
-          console.log(`[Agent] Window ${windowId} closed by user, removed from tracking`);
-        }
-      } else if (type === 'tab_removed') {
-        // tab 关闭时不需要特殊处理，window_removed 会处理窗口级别
-      } else if (requestId && pendingRequests[requestId]) {
-        const { resolve, reject, timeout } = pendingRequests[requestId];
-        clearTimeout(timeout);
-        delete pendingRequests[requestId];
-        if (error) reject(new Error(error));
-        else resolve(result);
+
+      // 处理扩展的 connect 握手请求
+      if (msg.type === 'req' && msg.method === 'connect') {
+        // 回复握手成功
+        ws.send(JSON.stringify({
+          type: 'res',
+          id: msg.id,
+          ok: true,
+          result: { protocol: 3 }
+        }));
+        console.log('[WS] Gateway 握手完成');
+        return;
       }
+
+      // 处理 pong（keepalive 回复）
+      if (msg.method === 'pong') {
+        return;
+      }
+
+      // 处理 CDP 命令的响应（与 EasyClaw 一致：先判断有 id 且为数字）
+      if (typeof msg.id === 'number') {
+        const p = pendingRequests[msg.id];
+        if (!p) return;
+        delete pendingRequests[msg.id];
+        clearTimeout(p.timer);
+        if (msg.error) p.reject(new Error(typeof msg.error === 'string' ? msg.error : JSON.stringify(msg.error)));
+        else p.resolve(msg.result);
+        return;
+      }
+
+      // 处理扩展推送的 CDP 事件
+      if (msg.method === 'forwardCDPEvent' && msg.params) {
+        handleCdpEvent(msg.params);
+        return;
+      }
+
+      // 处理 target 发现/变化/销毁事件（扩展上行）
+      if (msg.method === 'reportTargets') {
+        knownTargets.clear();
+        for (const t of (msg.targets || [])) {
+          knownTargets.set(t.targetId, { tabId: t.tabId, url: t.url, title: t.title, type: t.type });
+        }
+        console.log(`[CDP] 初始化已知 targets: ${knownTargets.size} 个`);
+        return;
+      }
+      if (msg.method === 'targetDiscovered') {
+        knownTargets.set(msg.targetId, { tabId: msg.tabId, url: msg.url, title: msg.title, type: msg.type });
+        broadcastToCdpClients({ method: 'Target.targetCreated', params: { targetInfo: { targetId: msg.targetId, type: msg.type || 'page', title: msg.title, url: msg.url, attached: false } } });
+        console.log(`[CDP] 发现新 target: ${msg.targetId} (${msg.url})`);
+        return;
+      }
+      if (msg.method === 'targetInfoChanged') {
+        const existing = knownTargets.get(msg.targetId);
+        knownTargets.set(msg.targetId, { ...existing, url: msg.url, title: msg.title });
+        broadcastToCdpClients({ method: 'Target.targetInfoChanged', params: { targetInfo: { targetId: msg.targetId, type: existing?.type || 'page', title: msg.title, url: msg.url, attached: false } } });
+        return;
+      }
+      if (msg.method === 'targetDestroyed') {
+        knownTargets.delete(msg.targetId);
+        broadcastToCdpClients({ method: 'Target.targetDestroyed', params: { targetId: msg.targetId } });
+        console.log(`[CDP] Target 已销毁: ${msg.targetId}`);
+        return;
+      }
+
     } catch (e) {
-      console.error('[WS] Parse error:', e.message);
+      console.error('[WS] 解析错误:', e.message);
     }
   });
 
   ws.on('close', () => {
-    console.log('[WS] Extension disconnected');
+    console.log('[WS] 扩展断开连接');
     if (extensionSocket === ws) {
       extensionSocket = null;
-      // 延迟 60 秒再清空，给网络抖动留重连时间
-      if (agentWindows._clearTimer) clearTimeout(agentWindows._clearTimer);
-      agentWindows._clearTimer = setTimeout(() => {
-        if (!extensionSocket) {
-          agentWindows.clear();
-          console.log('[Agent] Browser offline >60s, cleared all tracked windows');
-        }
-      }, 60000);
     }
     clearInterval(pingInterval);
+    // 拒绝所有等待中的请求
     Object.values(pendingRequests).forEach(({ reject, timeout }) => {
       clearTimeout(timeout);
       reject(new Error('Extension disconnected'));
@@ -188,103 +221,188 @@ function setupSocket(ws) {
     pendingRequests = {};
   });
 
-  ws.on('error', (e) => console.error('[WS] Error:', e.message));
+  ws.on('error', (e) => console.error('[WS] 错误:', e.message));
 
+  // keepalive: 发送 ping 命令（新扩展用 JSON ping 而非 WS ping）
   const pingInterval = setInterval(() => {
-    if (ws.readyState === ws.OPEN) ws.ping();
-    else clearInterval(pingInterval);
+    if (ws.readyState === ws.OPEN) {
+      try {
+        ws.send(JSON.stringify({ method: 'ping' }));
+      } catch { /* ignore */ }
+    } else {
+      clearInterval(pingInterval);
+    }
   }, 30000);
 }
 
-// ── 发送指令给扩展 ──────────────────────────────────────
-function sendCommand(command, params = {}, timeoutMs = 30000) {
+// 处理扩展推送的 CDP 事件
+function handleCdpEvent(params) {
+  const { method, params: eventParams, sessionId } = params;
+
+  // 广播给所有 /cdp 客户端（Playwright 需要这些事件）
+  broadcastToCdpClients({ method, params: eventParams, ...(sessionId ? { sessionId } : {}) });
+
+  if (method === 'Target.attachedToTarget') {
+    const sid = eventParams?.sessionId;
+    const targetInfo = eventParams?.targetInfo;
+    if (sid && targetInfo) {
+      attachedSessions.set(sid, {
+        targetId: targetInfo.targetId,
+        url: targetInfo.url || '',
+        title: targetInfo.title || '',
+        type: targetInfo.type || 'page'
+      });
+      console.log(`[CDP] Tab 已 attach: sessionId=${sid}, targetId=${targetInfo.targetId}`);
+      agentSessionId = sid;
+      console.log(`[CDP] 自动切换 agent session: ${sid}`);
+    }
+  }
+
+  if (method === 'Target.detachedFromTarget') {
+    const sid = eventParams?.sessionId;
+    if (sid) {
+      attachedSessions.delete(sid);
+      if (agentSessionId === sid) {
+        agentSessionId = attachedSessions.size > 0 ? attachedSessions.keys().next().value : null;
+        console.log(`[CDP] Agent session 已切换: ${agentSessionId || 'null'}`);
+      }
+      console.log(`[CDP] Tab 已 detach: sessionId=${sid}`);
+    }
+  }
+}
+
+// 广播 CDP 事件给所有 /cdp WebSocket 客户端
+function broadcastToCdpClients(evt) {
+  const msg = JSON.stringify(evt);
+  for (const ws of cdpClients) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+  }
+}
+
+// ── 发送 CDP 命令给扩展（与 EasyClaw 一致：30 秒超时） ──────────────────────────────
+function sendCdpCommand(method, params = {}, sessionId = null) {
   return new Promise((resolve, reject) => {
     if (!extensionSocket || extensionSocket.readyState !== extensionSocket.OPEN) {
       return reject(new Error('Extension not connected'));
     }
-    const requestId = crypto.randomUUID();
-    const timeout = setTimeout(() => {
-      delete pendingRequests[requestId];
-      reject(new Error('Command timeout: ' + command));
-    }, timeoutMs);
-    pendingRequests[requestId] = { resolve, reject, timeout };
-    extensionSocket.send(JSON.stringify({ requestId, command, params }));
+    const id = nextCdpId++;
+    const timer = setTimeout(() => {
+      pendingRequests[id] && delete pendingRequests[id];
+      reject(new Error(`extension request timeout: ${method}`));
+    }, 30_000);
+    pendingRequests[id] = { resolve, reject, timer };
+
+    const msg = {
+      id,
+      method: 'forwardCDPCommand',
+      params: {
+        method,
+        params,
+        ...(sessionId ? { sessionId } : {})
+      }
+    };
+    extensionSocket.send(JSON.stringify(msg));
   });
 }
 
-// ── REST API ────────────────────────────────────────────
+// ── /cdp WebSocket 端点（供 Playwright connectOverCDP 连接） ──────────
+cdpWss.on('connection', (ws) => {
+  console.log('[CDP-WS] Playwright/CDP 客户端已连接');
+  cdpClients.add(ws);
 
-// 一次性下载 token { token -> expiresAt }
-const dlTokens = new Map();
+  ws.on('message', async (data) => {
+    let cmd;
+    try { cmd = JSON.parse(data); } catch { return; }
+    const id = cmd.id;
+    const method = cmd.method || '';
+    const params = cmd.params || {};
+    const sessionId = cmd.sessionId;
 
-// 生成扩展下载链接（需要 Bearer Token，返回 60 秒有效的一次性链接）
-app.post('/gen-download-link', (req, res) => {
-  const pluginDir = path.join(process.env.HOME || '/root', '.openclaw/extensions/cloudhand');
-  const zipPath = path.join(pluginDir, 'extension.zip');
-  // zip 不存在时自动重新打包
-  if (!fs.existsSync(zipPath)) {
     try {
-      const extDir = path.join(pluginDir, 'extension');
-      const os = require('os');
-      const tmpDir = path.join(os.tmpdir(), 'cloudhand-ext-build');
-      if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
-      fs.mkdirSync(tmpDir, { recursive: true });
-      for (const f of fs.readdirSync(extDir)) {
-        fs.copyFileSync(path.join(extDir, f), path.join(tmpDir, f));
+      const result = await routeCdpCommand(method, params, sessionId);
+      ws.send(JSON.stringify({ id, ...(sessionId ? { sessionId } : {}), result: result || {} }));
+
+      // Target.setAutoAttach 响应后，补发所有已 attach 的 target（Playwright 靠此创建 Page）
+      if (method === 'Target.setAutoAttach' && params.autoAttach && !sessionId) {
+        for (const [sid, info] of attachedSessions.entries()) {
+          ws.send(JSON.stringify({
+            method: 'Target.attachedToTarget',
+            params: {
+              sessionId: sid,
+              targetInfo: { targetId: info.targetId, type: info.type || 'page', title: info.title, url: info.url, attached: true, browserContextId: 'default' },
+              waitingForDebugger: false
+            }
+          }));
+        }
       }
-      let publicIp2 = '127.0.0.1';
-      try { publicIp2 = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')).publicIp || publicIp2; } catch(e) {}
-      const configJs = `// Auto-generated\nexport const CLOUDHAND_CONFIG = { wsUrl: 'ws://${publicIp2}:${PORT}/ws', port: ${PORT} };\n`;
-      fs.writeFileSync(path.join(tmpDir, 'config.js'), configJs);
-      require('child_process').execSync(`cd '${tmpDir}' && zip -r '${zipPath}' .`, { stdio: 'ignore' });
-      console.log('[cloudhand] Extension zip rebuilt for download');
-    } catch(e) {
-      return res.status(500).json({ error: 'Failed to build extension zip: ' + e.message });
+    } catch (err) {
+      ws.send(JSON.stringify({ id, ...(sessionId ? { sessionId } : {}), error: { message: err.message } }));
     }
-  }
-  const dlToken = crypto.randomBytes(24).toString('hex');
-  dlTokens.set(dlToken, Date.now() + 120000);
-  setTimeout(() => dlTokens.delete(dlToken), 120000);
-  // 读取公网 IP
-  let publicIp = '127.0.0.1';
-  try {
-    const bc = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    publicIp = bc.publicIp || publicIp;
-  } catch(e) {}
-  const url = `http://${publicIp}:${PORT}/download-ext?t=${dlToken}`;
-  res.json({ url, expiresIn: 120 });
+  });
+
+  ws.on('close', () => {
+    cdpClients.delete(ws);
+    console.log('[CDP-WS] CDP 客户端已断开');
+  });
+
 });
 
-// 一次性下载端点（无需鉴权，但 dltoken 必须有效）
-app.get('/download-ext', (req, res) => {
-  const t = req.query.t || '';
-  const expiresAt = dlTokens.get(t);
-  if (!t || !expiresAt || Date.now() > expiresAt) {
-    return res.status(401).json({ error: 'Invalid or expired download token.' });
-  }
-  dlTokens.delete(t);
-  const pluginDir = path.join(process.env.HOME || '/root', '.openclaw/extensions/cloudhand');
-  const zipPath = path.join(pluginDir, 'extension.zip');
-  if (!fs.existsSync(zipPath)) {
-    return res.status(404).json({ error: 'Extension zip not found.' });
-  }
-  res.download(zipPath, 'cloudhand-extension.zip', (err) => {
-    if (!err) {
-      try { fs.unlinkSync(zipPath); } catch(e) {}
-      console.log('[cloudhand] Extension zip downloaded and deleted.');
+// CDP 命令路由：本地处理 Browser/Target 命令，其余转发给扩展
+async function routeCdpCommand(method, params, sessionId) {
+  switch (method) {
+    case 'Browser.getVersion':
+      return { protocolVersion: '1.3', product: 'Chrome/CloudHand-Extension-Relay', revision: '0', userAgent: 'CloudHand-Extension-Relay', jsVersion: 'V8' };
+    case 'Browser.setDownloadBehavior':
+      return {};
+    case 'Target.setAutoAttach':
+    case 'Target.setDiscoverTargets':
+      return {};
+    case 'Target.getTargets':
+      return { targetInfos: Array.from(attachedSessions.entries()).map(([sid, t]) => ({ targetId: t.targetId, type: t.type || 'page', title: t.title, url: t.url, attached: true })) };
+    case 'Target.getTargetInfo': {
+      const tid = params?.targetId;
+      if (tid) {
+        for (const t of attachedSessions.values()) {
+          if (t.targetId === tid) return { targetInfo: { targetId: tid, type: t.type || 'page', title: t.title, url: t.url, attached: true } };
+        }
+      }
+      if (sessionId && attachedSessions.has(sessionId)) {
+        const t = attachedSessions.get(sessionId);
+        return { targetInfo: { targetId: t.targetId, type: t.type || 'page', title: t.title, url: t.url, attached: true } };
+      }
+      const first = attachedSessions.values().next().value;
+      return { targetInfo: first ? { targetId: first.targetId, type: first.type || 'page', title: first.title, url: first.url, attached: true } : {} };
     }
+    case 'Target.attachToTarget':
+    case 'Target.detachFromTarget':
+    case 'Target.createTarget':
+    case 'Target.closeTarget':
+    case 'Target.activateTarget':
+      return await sendCdpCommand(method, params);
+    default:
+      return await sendCdpCommand(method, params, sessionId);
+  }
+}
+
+// ── CDP HTTP 端点（Playwright connectOverCDP 需要） ──────────
+app.get('/json/version', (req, res) => {
+  res.json({
+    Browser: 'CloudHand/extension-relay',
+    'Protocol-Version': '1.3',
+    webSocketDebuggerUrl: `ws://127.0.0.1:${PORT}/cdp`
   });
 });
 
-// TermHand 下载（公开，无需鉴权）
-app.get('/download-termhand', (req, res) => {
-  const zipPath = '/root/.openclaw/workspace/termhand/termhand.zip';
-  if (!fs.existsSync(zipPath)) {
-    return res.status(404).json({ error: 'termhand.zip not found' });
-  }
-  res.download(zipPath, 'termhand.zip');
+app.get('/json/list', (req, res) => {
+  const list = Array.from(knownTargets.entries()).map(([targetId, info]) => ({
+    id: targetId, type: info.type || 'page', title: info.title || '', url: info.url || '',
+    webSocketDebuggerUrl: `ws://127.0.0.1:${PORT}/cdp`
+  }));
+  res.json(list);
 });
+app.get('/json', (req, res) => res.redirect('/json/list'));
 
+// ── REST API ────────────────────────────────────────────
 
 // 获取 apiToken（仅限 127.0.0.1 本机访问）
 app.get('/token', (req, res) => {
@@ -295,559 +413,978 @@ app.get('/token', (req, res) => {
   res.json({ apiToken: config.apiToken });
 });
 
-// 返回 bridge 的连接配置，供扩展首次安装时自动填入
-app.get('/config', (req, res) => {
-  // 优先用环境变量 PUBLIC_IP，其次读配置文件，最后 fallback 到网卡 IP
-  const os = require('os');
-  const fs2 = require('fs');
-  let publicIp = process.env.PUBLIC_IP || null;
-  if (!publicIp) {
-    try {
-      const cfg = JSON.parse(fs2.readFileSync(CONFIG_FILE, 'utf8'));
-      publicIp = cfg.publicIp || null;
-    } catch {}
-  }
-  if (!publicIp) {
-    const interfaces = os.networkInterfaces();
-    for (const iface of Object.values(interfaces)) {
-      for (const addr of iface) {
-        if (addr.family === 'IPv4' && !addr.internal) {
-          publicIp = addr.address;
-          break;
-        }
-      }
-      if (publicIp) break;
-    }
-  }
-  res.json({
-    wsUrl: `ws://${publicIp}:${PORT}/ws`,
-    port: PORT
-  });
-});
-
 app.get('/status', (req, res) => {
   res.json({
-    connected: extensionSocket?.readyState === extensionSocket?.OPEN,
+    connected: !!(extensionSocket && extensionSocket.readyState === 1),
     pendingRequests: Object.keys(pendingRequests).length,
-    paired: !!config.sessionToken || LOCAL_MODE,
-    sessionCreatedAt: config.sessionCreatedAt || null,
     mode: LOCAL_MODE ? 'local' : 'remote',
-    localToken: LOCAL_MODE ? LOCAL_TOKEN : undefined
+    attachedTabs: attachedSessions.size,
+    agentSessionId,
+    sessions: Array.from(attachedSessions.entries()).map(([sid, info]) => ({
+      sessionId: sid,
+      targetId: info.targetId,
+      isAgent: sid === agentSessionId
+    }))
   });
 });
 
-// ── 配对 API（供 OpenClaw 调用）──────────────────────────
+// 列出所有已知的浏览器 tab（不限于已 attach 的）
+app.get('/list_tabs', (req, res) => {
+  const result = [];
+  for (const [targetId, info] of knownTargets.entries()) {
+    // 查找是否已 attach（有 sessionId）
+    let sessionId = null;
+    for (const [sid, sess] of attachedSessions.entries()) {
+      if (sess.targetId === targetId) { sessionId = sid; break; }
+    }
+    result.push({
+      targetId, ...info, sessionId,
+      isAgent: sessionId === agentSessionId
+    });
+  }
+  res.json({ ok: true, tabs: result, total: result.length });
+});
 
-// challenge 速率限制（每个 IP 每分钟最多 5 次）
-const challengeRateLimit = new Map(); // ip -> { count, resetAt }
-function checkChallengeRate(ip) {
-  const now = Date.now();
-  const entry = challengeRateLimit.get(ip) || { count: 0, resetAt: now + 60000 };
-  if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + 60000; }
-  entry.count++;
-  challengeRateLimit.set(ip, entry);
-  return entry.count <= 5;
+// 切换 agent 到指定 tab（通过 targetId 或 sessionId）
+app.post('/switch_tab', async (req, res) => {
+  try {
+    const { targetId, sessionId } = req.body;
+    // 方式 1：通过 sessionId 直接切换
+    if (sessionId && attachedSessions.has(sessionId)) {
+      agentSessionId = sessionId;
+      return res.json({ ok: true, agentSessionId });
+    }
+    // 方式 2：通过 targetId
+    if (targetId) {
+      // 检查是否已 attach
+      for (const [sid, sess] of attachedSessions.entries()) {
+        if (sess.targetId === targetId) {
+          agentSessionId = sid;
+          return res.json({ ok: true, agentSessionId });
+        }
+      }
+      // 未 attach，发送 Target.attachToTarget
+      const result = await sendCdpCommand('Target.attachToTarget', { targetId, flatten: true });
+      if (result?.sessionId) {
+        // 等待 attach 事件到达
+        for (let i = 0; i < 30; i++) {
+          await new Promise(r => setTimeout(r, 100));
+          if (attachedSessions.has(result.sessionId)) {
+            agentSessionId = result.sessionId;
+            return res.json({ ok: true, agentSessionId });
+          }
+        }
+        // attach 事件未到达但有 sessionId，也尝试设置
+        agentSessionId = result.sessionId;
+        return res.json({ ok: true, agentSessionId, warning: 'attach event not received' });
+      }
+      return res.status(500).json({ error: 'Target.attachToTarget failed' });
+    }
+    res.status(400).json({ error: 'targetId or sessionId required' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 确保有一个 agent 专属 tab（核心：不动用户窗口）
+app.post('/ensure_tab', async (req, res) => {
+  try {
+    // 检查是否已有可用的 agent session
+    if (agentSessionId && attachedSessions.has(agentSessionId)) {
+      const info = attachedSessions.get(agentSessionId);
+      return res.json({
+        ok: true,
+        sessionId: agentSessionId,
+        targetId: info.targetId,
+        reused: true
+      });
+    }
+
+    // 通过 CDP 创建新 tab（扩展内部会自动 attach 并推送 Target.attachedToTarget 事件）
+    const result = await sendCdpCommand('Target.createTarget', {
+      url: 'about:blank'
+    });
+
+    // 等待 attach 事件到来（扩展 attachTab 后会发 forwardCDPEvent）
+    // 最多等 3 秒
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 100));
+      if (agentSessionId && attachedSessions.has(agentSessionId)) {
+        const info = attachedSessions.get(agentSessionId);
+        return res.json({
+          ok: true,
+          sessionId: agentSessionId,
+          targetId: info.targetId,
+          reused: false
+        });
+      }
+    }
+
+    res.json({ ok: true, result, note: 'Tab created, waiting for attach' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 导航
+app.post('/navigate', async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'url is required' });
+
+    const sid = req.body.sessionId || agentSessionId;
+    if (!sid) return res.status(400).json({ error: 'No attached tab. Call /ensure_tab first.' });
+
+    const result = await sendCdpCommand('Page.navigate', { url }, sid);
+
+    // 等待页面加载完成
+    // 简化实现：等待 1.5 秒让页面有时间加载
+    await new Promise(r => setTimeout(r, 1500));
+
+    res.json({ ok: true, result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 截图
+app.post('/screenshot', async (req, res) => {
+  try {
+    const sid = req.body.sessionId || agentSessionId;
+    if (!sid) return res.status(400).json({ error: 'No attached tab' });
+
+    const result = await sendCdpCommand('Page.captureScreenshot', {
+      format: 'png',
+      quality: 80
+    }, sid);
+
+    res.json({ ok: true, data: result?.data ? `data:image/png;base64,${result.data}` : null });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 执行 JavaScript
+app.post('/eval', async (req, res) => {
+  try {
+    const { expression } = req.body;
+    if (!expression) return res.status(400).json({ error: 'expression is required' });
+
+    const sid = req.body.sessionId || agentSessionId;
+    if (!sid) return res.status(400).json({ error: 'No attached tab' });
+
+    const result = await sendCdpCommand('Runtime.evaluate', {
+      expression,
+      returnByValue: true,
+      awaitPromise: true
+    }, sid);
+
+    if (result?.exceptionDetails) {
+      return res.status(500).json({ error: result.exceptionDetails.text || 'JS eval error' });
+    }
+
+    res.json({ ok: true, result: result?.result?.value });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// CDP 点击（通过坐标或 selector）
+app.post('/click', async (req, res) => {
+  try {
+    const sid = req.body.sessionId || agentSessionId;
+    if (!sid) return res.status(400).json({ error: 'No attached tab' });
+
+    let x, y;
+
+    if (req.body.x !== undefined && req.body.y !== undefined) {
+      // 直接坐标点击
+      x = req.body.x;
+      y = req.body.y;
+    } else if (req.body.selector) {
+      // 通过纯 CDP 协议查找元素坐标，不再注入任何 JS (eval)
+      const doc = await sendCdpCommand('DOM.getDocument', { depth: 0 }, sid);
+      if (!doc || !doc.root) throw new Error('Failed to get DOM document');
+      const rootNodeId = doc.root.nodeId;
+
+      const queryRes = await sendCdpCommand('DOM.querySelectorAll', { nodeId: rootNodeId, selector: req.body.selector }, sid);
+      const nodeIds = queryRes?.nodeIds || [];
+
+      let foundBox = false;
+      for (const nodeId of nodeIds) {
+        try {
+          const boxRes = await sendCdpCommand('DOM.getBoxModel', { nodeId }, sid);
+          const model = boxRes?.model;
+          if (model && model.width > 0 && model.height > 0) {
+            x = model.content[0] + model.width / 2;
+            y = model.content[1] + model.height / 2;
+            foundBox = true;
+            break;
+          }
+        } catch (e) {
+          // 忽略获取失败的不可见节点
+        }
+      }
+
+      if (!foundBox) {
+        return res.status(404).json({ error: `Visible element not found: ${req.body.selector}` });
+      }
+    } else {
+      return res.status(400).json({ error: 'x/y or selector required' });
+    }
+
+    // CDP 鼠标点击事件序列（mouseMoved → mousePressed → 50ms → mouseReleased）
+    await sendCdpCommand('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x, y
+    }, sid);
+    await sendCdpCommand('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x, y, button: 'left', clickCount: 1
+    }, sid);
+    await new Promise(r => setTimeout(r, 50));
+    await sendCdpCommand('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x, y, button: 'left', clickCount: 1
+    }, sid);
+
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// CDP 键盘输入
+app.post('/type', async (req, res) => {
+  try {
+    const { text, selector } = req.body;
+    if (!text) return res.status(400).json({ error: 'text is required' });
+
+    const sid = req.body.sessionId || agentSessionId;
+    if (!sid) return res.status(400).json({ error: 'No attached tab' });
+
+    // 如果提供了 selector，用纯 CDP 聚焦（不注入 JS）
+    if (selector) {
+      const doc = await sendCdpCommand('DOM.getDocument', { depth: 0 }, sid);
+      const queryRes = await sendCdpCommand('DOM.querySelector', { nodeId: doc.root.nodeId, selector }, sid);
+      if (queryRes?.nodeId) {
+        await sendCdpCommand('DOM.focus', { nodeId: queryRes.nodeId }, sid);
+      }
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    // 逐字符发送键盘事件
+    for (const char of text) {
+      if (char === '\n') {
+        await sendCdpCommand('Input.dispatchKeyEvent', {
+          type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13
+        }, sid);
+        await sendCdpCommand('Input.dispatchKeyEvent', {
+          type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13
+        }, sid);
+      } else {
+        // 三段式键盘事件：keyDown → char → keyUp（与 browser-use 一致）
+        await sendCdpCommand('Input.dispatchKeyEvent', {
+          type: 'keyDown', key: char, code: `Key${char.toUpperCase()}`
+        }, sid);
+        await sendCdpCommand('Input.dispatchKeyEvent', {
+          type: 'char', text: char, key: char
+        }, sid);
+        await sendCdpCommand('Input.dispatchKeyEvent', {
+          type: 'keyUp', key: char, code: `Key${char.toUpperCase()}`
+        }, sid);
+      }
+      // 模拟人类输入延迟（18ms，与 browser-use 一致）
+      await new Promise(r => setTimeout(r, 18));
+    }
+
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 获取页面信息（纯 CDP，使用 Page.getNavigationHistory 而非 Runtime.evaluate）
+async function getPageInfoPureCDP(sid) {
+  let url = '', title = '';
+  // 优先从缓存的 session 信息获取
+  const session = attachedSessions.get(sid);
+  if (session) {
+    url = session.url || '';
+    title = session.title || '';
+  }
+  // 用 Page.getNavigationHistory 获取最新值（纯 CDP，无 JS 注入）
+  try {
+    const navHistory = await sendCdpCommand('Page.getNavigationHistory', {}, sid);
+    if (navHistory?.entries?.length) {
+      const current = navHistory.entries[navHistory.currentIndex];
+      url = current.url;
+      title = current.title;
+    }
+  } catch (e) { /* 使用缓存值 */ }
+  return { url, title };
 }
 
-// 生成 challenge（OpenClaw 调用，返回6位码）
-app.post('/pair/challenge', (req, res) => {
-  const ip = req.ip || req.connection.remoteAddress || 'unknown';
-  // 本地模式跳过速率限制
-  if (!LOCAL_MODE && !checkChallengeRate(ip)) {
-    return res.status(429).json({ error: 'Too many requests. Max 5 per minute.' });
+app.post('/get_page_info', async (req, res) => {
+  try {
+    const sid = req.body.sessionId || agentSessionId;
+    if (!sid) return res.status(400).json({ error: 'No attached tab' });
+    const info = await getPageInfoPureCDP(sid);
+    res.json({ ok: true, ...info });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
+});
+app.get('/get_page_info', async (req, res) => {
+  try {
+    const sid = agentSessionId;
+    if (!sid) return res.status(400).json({ error: 'No attached tab' });
+    const info = await getPageInfoPureCDP(sid);
+    res.json({ ok: true, ...info });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 万能 CDP 透传接口
+app.post('/cdp', async (req, res) => {
+  try {
+    const { method, params } = req.body;
+    if (!method) return res.status(400).json({ error: 'method is required' });
+
+    const sid = req.body.sessionId || agentSessionId;
+    const result = await sendCdpCommand(method, params || {}, sid);
+
+    res.json({ ok: true, result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 获取无障碍树
+app.post('/get_ax_tree', async (req, res) => {
+  try {
+    const sid = req.body.sessionId || agentSessionId;
+    if (!sid) return res.status(400).json({ error: 'No attached tab' });
+
+    const result = await sendCdpCommand('Accessibility.getFullAXTree', {}, sid);
+    res.json({ ok: true, nodes: result?.nodes });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Playwright 连接管理（通过 /cdp 端点连接自身） ──────────────
+let pwBrowser = null;
+let pwConnecting = null;
+
+async function ensurePlaywright() {
+  if (pwBrowser?.isConnected()) return pwBrowser;
+  if (pwConnecting) return await pwConnecting;
+  pwConnecting = (async () => {
+    try {
+      const browser = await chromium.connectOverCDP(`ws://127.0.0.1:${PORT}/cdp`, { timeout: 5000 });
+      pwBrowser = browser;
+      browser.on('disconnected', () => { if (pwBrowser === browser) pwBrowser = null; });
+      console.log('[Playwright] 已连接到 /cdp 端点');
+      return browser;
+    } finally {
+      pwConnecting = null;
+    }
+  })();
+  return await pwConnecting;
+}
+
+// 获取 Playwright Page（通过 targetId 查找，与 EasyClaw findPageByTargetId 一致）
+async function getPlaywrightPage(targetId) {
+  const browser = await ensurePlaywright();
+  const pages = browser.contexts().flatMap(c => c.pages());
+  if (!pages.length) throw new Error('No pages available');
+  if (!targetId) return pages[0];
+
+  // 第一层：通过 CDP session 匹配 targetId
+  for (const page of pages) {
+    try {
+      const session = await page.context().newCDPSession(page);
+      const info = await session.send('Target.getTargetInfo');
+      await session.detach().catch(() => { });
+      if (info?.targetInfo?.targetId === targetId) return page;
+    } catch { /* 扩展桥接模式下 Target.attachToBrowserTarget 会被拦截，继续 fallback */ }
+  }
+
+  // 第二层：通过 /json/list + URL 匹配（与 EasyClaw 一致）
+  try {
+    const resp = await fetch(`http://127.0.0.1:${PORT}/json/list`, {
+      headers: { Authorization: `Bearer ${LOCAL_MODE ? LOCAL_TOKEN : config.apiToken}` }
+    });
+    if (resp.ok) {
+      const targets = await resp.json();
+      const target = targets.find(t => t.id === targetId);
+      if (target) {
+        const urlMatch = pages.filter(p => p.url() === target.url);
+        if (urlMatch.length === 1) return urlMatch[0];
+        // 多个相同 URL 的 page，按索引匹配
+        if (urlMatch.length > 1) {
+          const sameUrlTargets = targets.filter(t => t.url === target.url);
+          if (sameUrlTargets.length === urlMatch.length) {
+            const idx = sameUrlTargets.findIndex(t => t.id === targetId);
+            if (idx >= 0 && idx < urlMatch.length) return urlMatch[idx];
+          }
+        }
+      }
+    }
+  } catch { /* fetch 失败，继续 fallback */ }
+
+  // 最终 fallback：只有一个 page 时直接返回
+  if (pages.length === 1) return pages[0];
+  throw new Error(`Tab not found: ${targetId}`);
+}
+
+// ── Playwright Snapshot 路由 ──────────────────────────
+// 抄 EasyClaw 的 aria snapshot：用 Playwright ariaSnapshot 生成带 ref 的快照
+const INTERACTIVE_ROLES = new Set([
+  'button', 'link', 'textbox', 'checkbox', 'radio', 'combobox', 'listbox',
+  'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'searchbox',
+  'slider', 'spinbutton', 'switch', 'tab', 'treeitem'
+]);
+
+function buildRoleSnapshot(ariaSnapshot) {
+  const lines = ariaSnapshot.split('\n');
+  const refs = {};
+  const result = [];
+  let counter = 0;
+  const counts = new Map();
+
+  for (const line of lines) {
+    const match = line.match(/^(\s*-\s*)(\w+)(?:\s+"([^"]*)")?(.*)$/);
+    if (!match) { result.push(line); continue; }
+    const [, prefix, roleRaw, name, suffix] = match;
+    const role = roleRaw.toLowerCase();
+    const isInteractive = INTERACTIVE_ROLES.has(role);
+    const isContent = ['heading', 'cell', 'gridcell', 'columnheader', 'rowheader', 'listitem'].includes(role);
+    if (!isInteractive && !(isContent && name)) { result.push(line); continue; }
+
+    counter++;
+    const ref = `e${counter}`;
+    const key = `${role}:${name || ''}`;
+    const nth = counts.get(key) || 0;
+    counts.set(key, nth + 1);
+    refs[ref] = { role, ...(name ? { name } : {}), nth };
+
+    let enhanced = `${prefix}${roleRaw}`;
+    if (name) enhanced += ` "${name}"`;
+    enhanced += ` [ref=${ref}]`;
+    if (nth > 0) enhanced += ` [nth=${nth}]`;
+    if (suffix) enhanced += suffix;
+    result.push(enhanced);
+  }
+  return { snapshot: result.join('\n') || '(empty)', refs };
+}
+
+// 页面级 ref 缓存
+const pageRefs = new Map(); // targetId -> refs
+
+app.post('/snapshot', async (req, res) => {
+  try {
+    const targetId = req.body.targetId || (agentSessionId ? attachedSessions.get(agentSessionId)?.targetId : null);
+    const page = await getPlaywrightPage(targetId);
+
+    // 使用 Playwright 的 ariaSnapshot
+    const ariaText = await page.locator('body').ariaSnapshot({ ref: true });
+    const { snapshot, refs } = buildRoleSnapshot(ariaText);
+
+    // 缓存 refs
+    if (targetId) pageRefs.set(targetId, { refs, page });
+
+    const url = page.url();
+    const title = await page.title().catch(() => '');
+
+    res.json({
+      ok: true, snapshot, refs,
+      stats: { lines: snapshot.split('\n').length, chars: snapshot.length, refs: Object.keys(refs).length },
+      url, title, targetId
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Playwright Act 路由（统一交互接口） ──────────────
+function refLocator(page, ref, refs) {
+  const normalized = ref.startsWith('@') ? ref.slice(1) : ref.startsWith('ref=') ? ref.slice(4) : ref;
+  if (/^e\d+$/.test(normalized) && refs?.[normalized]) {
+    const info = refs[normalized];
+    const locator = info.name
+      ? page.getByRole(info.role, { name: info.name, exact: true })
+      : page.getByRole(info.role);
+    return info.nth > 0 ? locator.nth(info.nth) : locator;
+  }
+  // 回退：当作 CSS selector
+  return page.locator(normalized);
+}
+
+app.post('/act', async (req, res) => {
+  try {
+    const { kind, ref, text, key, submit, slowly, targetId: reqTargetId } = req.body;
+    const targetId = reqTargetId || (agentSessionId ? attachedSessions.get(agentSessionId)?.targetId : null);
+    const page = await getPlaywrightPage(targetId);
+    const cachedRefs = targetId ? pageRefs.get(targetId)?.refs : null;
+    const timeout = Math.max(500, Math.min(60000, req.body.timeoutMs || 5000));
+
+    // ── 坐标归一化处理（千分位 → 绝对像素） ──
+    if (req.body.coordType === 'normalized') {
+      const viewport = page.viewportSize();
+      if (!viewport) throw new Error('Cannot get viewport size for coordinate normalization');
+      const normalize = (v, max) => Math.round(v * max / 1000);
+      for (const k of ['x', 'y', 'originX', 'originY', 'startX', 'startY', 'endX', 'endY']) {
+        if (typeof req.body[k] === 'number') {
+          const isX = k.toLowerCase().includes('x');
+          req.body[k] = normalize(req.body[k], isX ? viewport.width : viewport.height);
+        }
+      }
+    }
+
+    // ── 记录操作前的 Tab 列表（用于检测新 Tab） ──
+    const tabsBefore = new Set(knownTargets.keys());
+
+    switch (kind) {
+      case 'click': {
+        if (!ref) return res.status(400).json({ error: 'ref required' });
+        const loc = refLocator(page, ref, cachedRefs);
+        if (req.body.doubleClick) await loc.dblclick({ timeout });
+        else await loc.click({ timeout });
+        break;
+      }
+      case 'type': {
+        if (!ref) return res.status(400).json({ error: 'ref required' });
+        const loc = refLocator(page, ref, cachedRefs);
+        if (slowly) {
+          await loc.click({ timeout });
+          await page.keyboard.type(text || '', { delay: 75 });
+        } else {
+          await loc.fill(text || '', { timeout });
+        }
+        if (submit) await loc.press('Enter', { timeout });
+        break;
+      }
+      case 'press': {
+        if (!key) return res.status(400).json({ error: 'key required' });
+        await page.keyboard.press(key);
+        break;
+      }
+      case 'hover': {
+        if (!ref) return res.status(400).json({ error: 'ref required' });
+        await refLocator(page, ref, cachedRefs).hover({ timeout });
+        break;
+      }
+      case 'select': {
+        if (!ref) return res.status(400).json({ error: 'ref required' });
+        await refLocator(page, ref, cachedRefs).selectOption(req.body.values || [], { timeout });
+        break;
+      }
+      case 'scrollIntoView': {
+        if (!ref) return res.status(400).json({ error: 'ref required' });
+        await refLocator(page, ref, cachedRefs).scrollIntoViewIfNeeded({ timeout });
+        break;
+      }
+
+      // ── 坐标操作类（与 EasyClaw 对齐） ──────────────────
+
+      case 'clickAt': {
+        // 基于像素坐标点击（坐标由调用方负责归一化转换）
+        const x = req.body.x;
+        const y = req.body.y;
+        if (typeof x !== 'number' || typeof y !== 'number') {
+          return res.status(400).json({ error: 'x and y are required (numbers)' });
+        }
+        const button = req.body.button || 'left';
+        const doubleClick = req.body.doubleClick || false;
+        // 移动鼠标到目标位置
+        await page.mouse.move(Math.floor(x), Math.floor(y));
+        if (doubleClick) {
+          await page.mouse.dblclick(Math.floor(x), Math.floor(y), { button });
+        } else {
+          await page.mouse.click(Math.floor(x), Math.floor(y), { button });
+        }
+        break;
+      }
+      case 'hoverAt': {
+        // 基于像素坐标悬停（触发 CSS :hover 和 mouseover 事件）
+        const x = req.body.x;
+        const y = req.body.y;
+        if (typeof x !== 'number' || typeof y !== 'number') {
+          return res.status(400).json({ error: 'x and y are required (numbers)' });
+        }
+        await page.mouse.move(Math.floor(x), Math.floor(y));
+        break;
+      }
+      case 'scroll': {
+        // 基于坐标滚动（先移动鼠标到指定位置，再滚动）
+        const dx = req.body.x || 0;
+        const dy = req.body.y || 0;
+        // 可选：先移动到指定的滚动锚点位置
+        if (req.body.originX !== undefined && req.body.originY !== undefined) {
+          await page.mouse.move(Math.floor(req.body.originX), Math.floor(req.body.originY));
+        }
+        await page.mouse.wheel(dx, dy);
+        break;
+      }
+      case 'dragAt': {
+        // 基于坐标拖拽
+        const startX = req.body.startX;
+        const startY = req.body.startY;
+        const endX = req.body.endX;
+        const endY = req.body.endY;
+        if ([startX, startY, endX, endY].some(v => typeof v !== 'number')) {
+          return res.status(400).json({ error: 'startX, startY, endX, endY are required (numbers)' });
+        }
+        await page.mouse.move(Math.floor(startX), Math.floor(startY));
+        await page.mouse.down();
+        await page.mouse.move(Math.floor(endX), Math.floor(endY));
+        await page.mouse.up();
+        break;
+      }
+      case 'typeAt': {
+        // 在坐标位置点击后输入文字
+        const x = req.body.x;
+        const y = req.body.y;
+        if (typeof x !== 'number' || typeof y !== 'number') {
+          return res.status(400).json({ error: 'x and y are required (numbers)' });
+        }
+        if (!text) return res.status(400).json({ error: 'text required' });
+        await page.mouse.click(Math.floor(x), Math.floor(y));
+        await page.keyboard.type(text, { delay: slowly ? 75 : 0 });
+        if (submit) await page.keyboard.press('Enter');
+        break;
+      }
+
+      // ── 语义 Ref 操作类（补齐） ──────────────────────────
+
+      case 'drag': {
+        // ref 到 ref 拖拽
+        const startRef = req.body.startRef || ref;
+        const endRef = req.body.endRef;
+        if (!startRef || !endRef) {
+          return res.status(400).json({ error: 'startRef and endRef are required' });
+        }
+        await refLocator(page, startRef, cachedRefs).dragTo(
+          refLocator(page, endRef, cachedRefs),
+          { timeout }
+        );
+        break;
+      }
+      case 'fill': {
+        // 批量填表：fields = [{ ref, type, value }, ...]
+        const fields = req.body.fields;
+        if (!Array.isArray(fields) || !fields.length) {
+          return res.status(400).json({ error: 'fields array is required' });
+        }
+        for (const field of fields) {
+          if (!field.ref || !field.type) continue;
+          const loc = refLocator(page, field.ref, cachedRefs);
+          switch (field.type) {
+            case 'text':
+              await loc.fill(String(field.value ?? ''), { timeout });
+              break;
+            case 'checkbox':
+              if (field.value) await loc.check({ timeout });
+              else await loc.uncheck({ timeout });
+              break;
+            case 'radio':
+              await loc.check({ timeout });
+              break;
+            case 'select':
+              await loc.selectOption(String(field.value ?? ''), { timeout });
+              break;
+            default:
+              await loc.fill(String(field.value ?? ''), { timeout });
+          }
+        }
+        break;
+      }
+      case 'evaluate': {
+        // 在页面上下文执行 JS（与 /eval 端点逻辑一致，但统一到 /act 路由）
+        const fn = req.body.fn || text;
+        if (!fn) return res.status(400).json({ error: 'fn (JavaScript expression) required' });
+        let evalResult;
+        if (ref) {
+          // 在指定元素上下文中执行
+          evalResult = await refLocator(page, ref, cachedRefs).evaluate(
+            new Function('el', fn)
+          );
+        } else {
+          evalResult = await page.evaluate(fn);
+        }
+        return res.json({ ok: true, targetId, url: page.url(), result: evalResult });
+      }
+
+      // ── 全局操作类（补齐） ──────────────────────────────
+
+      case 'typev': {
+        // 系统粘贴（降级为 insertText，效果等价于 Ctrl+V）
+        if (!text) return res.status(400).json({ error: 'text required' });
+        await page.keyboard.insertText(text);
+        if (submit) await page.keyboard.press('Enter');
+        break;
+      }
+      case 'resize': {
+        // 改变视口尺寸
+        const width = req.body.width;
+        const height = req.body.height;
+        if (typeof width !== 'number' || typeof height !== 'number') {
+          return res.status(400).json({ error: 'width and height are required (numbers)' });
+        }
+        await page.setViewportSize({ width: Math.floor(width), height: Math.floor(height) });
+        break;
+      }
+      case 'wait': {
+        // 等待条件满足
+        const timeMs = req.body.timeMs;
+        const waitText = req.body.text || text;
+        const textGone = req.body.textGone;
+        const selector = req.body.selector;
+        const url = req.body.url;
+        const waitTimeout = req.body.timeoutMs || 30000;
+
+        if (timeMs) {
+          await page.waitForTimeout(timeMs);
+        }
+        if (waitText) {
+          await page.waitForSelector(`text=${waitText}`, { timeout: waitTimeout });
+        }
+        if (textGone) {
+          await page.waitForSelector(`text=${textGone}`, { state: 'hidden', timeout: waitTimeout });
+        }
+        if (selector) {
+          await page.waitForSelector(selector, { timeout: waitTimeout });
+        }
+        if (url) {
+          await page.waitForURL(url, { timeout: waitTimeout });
+        }
+        break;
+      }
+      case 'close': {
+        // 关闭当前标签页
+        await page.close();
+        break;
+      }
+
+      default:
+        return res.status(400).json({ error: `Unknown kind: ${kind}` });
+    }
+
+    // ── 操作后等待 300ms 让页面稳定 ──
+    await new Promise(r => setTimeout(r, 300));
+
+    // ── 检测新 Tab ──
+    let newTab = null;
+    for (const [tid, info] of knownTargets.entries()) {
+      if (!tabsBefore.has(tid) && (info.type === 'page' || !info.type)) {
+        newTab = { targetId: tid, url: info.url || '', title: info.title || '' };
+        break;
+      }
+    }
+
+    // ── 获取当前 Tab 的 snapshot（默认行为，静默降级） ──
+    let snapshot = null, refs = null;
+    try {
+      const ariaText = await page.locator('body').ariaSnapshot({ ref: true });
+      const built = buildRoleSnapshot(ariaText);
+      snapshot = built.snapshot;
+      refs = built.refs;
+      if (targetId) pageRefs.set(targetId, { refs, page });
+    } catch (snapErr) {
+      // snapshot 失败不影响 act 结果
+      console.log(`[act] snapshot 静默降级: ${snapErr.message}`);
+    }
+
+    // ── 如果有新 Tab，尝试获取新 Tab 的 snapshot ──
+    let newTabSnapshot = null;
+    if (newTab) {
+      try {
+        const newPage = await getPlaywrightPage(newTab.targetId);
+        // 等待新页面基本加载
+        await newPage.waitForLoadState('domcontentloaded', { timeout: 3000 }).catch(() => {});
+        const newAriaText = await newPage.locator('body').ariaSnapshot({ ref: true });
+        const newBuilt = buildRoleSnapshot(newAriaText);
+        newTabSnapshot = { snapshot: newBuilt.snapshot, refs: newBuilt.refs, url: newPage.url() };
+        pageRefs.set(newTab.targetId, { refs: newBuilt.refs, page: newPage });
+      } catch (e) {
+        console.log(`[act] 新 Tab snapshot 失败: ${e.message}`);
+      }
+    }
+
+    // ── 构造统一返回 ──
+    const result = { ok: true, targetId, url: page.url() };
+    if (snapshot) { result.snapshot = snapshot; result.refs = refs; result.stats = { refs: Object.keys(refs).length }; }
+    if (newTab) { result.newTab = newTab; }
+    if (newTabSnapshot) { result.newTabSnapshot = newTabSnapshot; }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── 带标签的截图（照搬 EasyClaw screenshotWithLabels） ──────────────
+app.post('/screenshot_with_labels', async (req, res) => {
+  try {
+    const targetId = req.body.targetId || (agentSessionId ? attachedSessions.get(agentSessionId)?.targetId : null);
+    const page = await getPlaywrightPage(targetId);
+    const maxLabels = typeof req.body.maxLabels === 'number' ? Math.max(1, req.body.maxLabels) : 500;
+    const filterMode = req.body.filterMode || 'clickable'; // clickable | viewport | none
+
+    // 1. 获取 snapshot 和 refs
+    const ariaText = await page.locator('body').ariaSnapshot({ ref: true });
+    const { snapshot, refs } = buildRoleSnapshot(ariaText);
+    if (targetId) pageRefs.set(targetId, { refs, page });
+
+    // 2. 获取 viewport 信息
+    const viewport = await page.evaluate(() => ({
+      scrollX: window.scrollX || 0, scrollY: window.scrollY || 0,
+      width: window.innerWidth || 0, height: window.innerHeight || 0,
+    }));
+
+    // 3. 遍历 refs，获取可见元素的边界框
+    const refKeys = Object.keys(refs);
+    const boxes = [];
+    let skipped = 0;
+
+    for (const ref of refKeys) {
+      if (boxes.length >= maxLabels) { skipped++; continue; }
+      try {
+        const loc = refLocator(page, ref, refs);
+        if (filterMode === 'clickable') {
+          // 合并检测：可见性 + 遮挡 + 边界框
+          const result = await loc.evaluate((el) => {
+            const style = getComputedStyle(el);
+            if (style.visibility === 'hidden') return { skip: true };
+            if (style.display === 'none') return { skip: true };
+            if (parseFloat(style.opacity) === 0) return { skip: true };
+            if (style.pointerEvents === 'none') return { skip: true };
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return { skip: true };
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+            const topEl = document.elementFromPoint(cx, cy);
+            if (topEl !== el && !el.contains(topEl)) return { skip: true };
+            return { skip: false, box: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
+          });
+          if (result.skip) { skipped++; continue; }
+          const box = result.box;
+          // 视口裁剪
+          if (box.x + box.width < 0 || box.x > viewport.width || box.y + box.height < 0 || box.y > viewport.height) {
+            skipped++; continue;
+          }
+          boxes.push({ ref, x: box.x, y: box.y, w: Math.max(1, box.width), h: Math.max(1, box.height) });
+        } else if (filterMode === 'viewport') {
+          const box = await loc.boundingBox();
+          if (!box) { skipped++; continue; }
+          if (box.x + box.width < 0 || box.x > viewport.width || box.y + box.height < 0 || box.y > viewport.height) {
+            skipped++; continue;
+          }
+          boxes.push({ ref, x: box.x - viewport.scrollX, y: box.y - viewport.scrollY, w: Math.max(1, box.width), h: Math.max(1, box.height) });
+        } else {
+          const box = await loc.boundingBox();
+          if (!box) { skipped++; continue; }
+          boxes.push({ ref, x: box.x - viewport.scrollX, y: box.y - viewport.scrollY, w: Math.max(1, box.width), h: Math.max(1, box.height) });
+        }
+      } catch { skipped++; }
+    }
+
+    // 4. 注入标签层
+    if (boxes.length > 0) {
+      await page.evaluate((labels) => {
+        const existing = document.querySelectorAll('[data-cloudhand-labels]');
+        existing.forEach(el => el.remove());
+        const root = document.createElement('div');
+        root.setAttribute('data-cloudhand-labels', '1');
+        root.style.position = 'fixed';
+        root.style.left = '0'; root.style.top = '0';
+        root.style.zIndex = '2147483647';
+        root.style.pointerEvents = 'none';
+        root.style.fontFamily = 'monospace';
+        for (const label of labels) {
+          // 边框
+          const box = document.createElement('div');
+          box.setAttribute('data-cloudhand-labels', '1');
+          box.style.position = 'absolute';
+          box.style.left = label.x + 'px'; box.style.top = label.y + 'px';
+          box.style.width = label.w + 'px'; box.style.height = label.h + 'px';
+          box.style.border = '2px solid #ffb020'; box.style.boxSizing = 'border-box';
+          // 标签文字
+          const tag = document.createElement('div');
+          tag.setAttribute('data-cloudhand-labels', '1');
+          tag.textContent = label.ref;
+          tag.style.position = 'absolute';
+          tag.style.left = label.x + 'px';
+          tag.style.top = Math.max(0, label.y - 18) + 'px';
+          tag.style.background = '#ffb020'; tag.style.color = '#1a1a1a';
+          tag.style.fontSize = '12px'; tag.style.lineHeight = '14px';
+          tag.style.padding = '1px 4px'; tag.style.borderRadius = '3px';
+          tag.style.boxShadow = '0 1px 2px rgba(0,0,0,0.35)';
+          tag.style.whiteSpace = 'nowrap';
+          root.appendChild(box); root.appendChild(tag);
+        }
+        document.documentElement.appendChild(root);
+      }, boxes);
+    }
+
+    // 5. 截图（带超时防护，绕过字体加载卡死）
+    let buffer;
+    try {
+      // 先停止页面加载，防止 Playwright 死等字体
+      await page.evaluate(() => { try { window.stop(); } catch {} }).catch(() => {});
+      buffer = await Promise.race([
+        page.screenshot({ type: 'png' }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Screenshot timeout 15s')), 15000))
+      ]);
+    } catch (screenshotErr) {
+      // 截图失败，清除标签层后降级返回纯文本 snapshot
+      await page.evaluate(() => {
+        const existing = document.querySelectorAll('[data-cloudhand-labels]');
+        existing.forEach(el => el.remove());
+      }).catch(() => {});
+      return res.json({
+        ok: true, data: null,
+        snapshot, refs, labels: boxes.length, skipped,
+        stats: { refs: Object.keys(refs).length },
+        url: page.url(), targetId,
+        screenshotError: screenshotErr.message
+      });
+    }
+
+    // 6. 清除标签层
+    await page.evaluate(() => {
+      const existing = document.querySelectorAll('[data-cloudhand-labels]');
+      existing.forEach(el => el.remove());
+    }).catch(() => {});
+
+    const base64 = buffer.toString('base64');
+    res.json({
+      ok: true,
+      data: `data:image/png;base64,${base64}`,
+      snapshot, refs, labels: boxes.length, skipped,
+      stats: { refs: Object.keys(refs).length },
+      url: page.url(), targetId
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── 配对 API（保留远程模式接口） ──────────────────────────
+
+let pendingChallenge = null;
+
+app.post('/pair/challenge', (req, res) => {
   const code = String(Math.floor(100000 + Math.random() * 900000));
   pendingChallenge = { code, expiresAt: Date.now() + 30000 };
   console.log(`[Pair] Challenge generated: ${code}`);
   res.json({ code, expiresAt: pendingChallenge.expiresAt });
 });
 
-// 吊销 session（断开连接，需要 Bearer Token）
-app.post('/pair/revoke', (req, res) => {
-  const auth = req.headers['authorization'] || '';
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : (req.query.token || '');
-  if (!token || token !== config.apiToken) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  config.sessionToken = null;
-  config.sessionCreatedAt = null;
-  saveConfig(config);
-  if (extensionSocket && extensionSocket.readyState === extensionSocket.OPEN) {
-    extensionSocket.close(1000, 'Session revoked');
-  }
-  pendingChallenge = null;
-  console.log('[Pair] Session revoked');
-  res.json({ ok: true });
-});
-
-// ── Agent 管理的窗口列表 ──────────────────────────────────
-const agentWindows = new Set(); // 记录 agent 开的所有 windowId
-let currentAgentTabId = null; // 当前 agent 操作的 tab
-
-// ── 浏览器操作 API ──────────────────────────────────────
-// 注入 Agent 操作提示条（显示在页面右上角）
-const INDICATOR_CMDS = ['navigate','click','type','key','scroll','set_value','go_back','go_forward','select','eval','hover'];
-
-async function showAgentIndicator(tabId, action) {
-  const label = {
-    navigate: '🤖 导航中...', click: '🤖 点击中...', type: '🤖 输入中...',
-    key: '🤖 按键中...', scroll: '🤖 滚动中...', set_value: '🤖 填值中...',
-    go_back: '🤖 后退...', go_forward: '🤖 前进...', select: '🤖 选择中...',
-    eval: '🤖 执行JS...', hover: '🤖 悬停中...'
-  }[action] || '🤖 AI操作中...';
-  const js = `
-    (function(){
-      var id='__agent_indicator__';
-      var el=document.getElementById(id);
-      if(!el){
-        el=document.createElement('div');el.id=id;
-        el.style.cssText='position:fixed;top:16px;right:16px;z-index:2147483647;background:rgba(20,20,20,0.93);color:#fff;padding:8px 18px;border-radius:20px;font-size:14px;font-weight:600;font-family:sans-serif;box-shadow:0 4px 18px rgba(0,0,0,0.5);pointer-events:none;transition:opacity 0.3s;';
-        // 注入跑步动画 keyframe
-        if(!document.getElementById('__agent_indicator_style__')){
-          var st=document.createElement('style');st.id='__agent_indicator_style__';
-          st.textContent='@keyframes __agent_run__{ 0%{transform:translateX(0px)} 25%{transform:translateX(-6px)} 75%{transform:translateX(6px)} 100%{transform:translateX(0px)} }';
-          document.head.appendChild(st);
-        }
-        el.style.animation='__agent_run__ 0.5s ease-in-out infinite';
-        document.body.appendChild(el);
-      }
-      el.textContent='${label}';
-      el.style.opacity='1';
-      el.style.animation='__agent_run__ 0.5s ease-in-out infinite';
-      clearTimeout(el._hideTimer);
-    })();
-  `;
-  try { await sendCommand('eval', { tabId, expression: js }); } catch(e) {}
-}
-
-async function hideAgentIndicator(tabId) {
-  const js = `
-    (function(){
-      var el=document.getElementById('__agent_indicator__');
-      if(el){el.style.opacity='0';el._hideTimer=setTimeout(function(){el.remove();},400);}
-    })();
-  `;
-  try { await sendCommand('eval', { tabId, expression: js }); } catch(e) {}
-}
-
-const route = (cmd, extract) => async (req, res) => {
-  const params = req.method === 'GET' ? req.query : req.body || {};
-  try {
-    // 对需要 tab 的操作，自动注入 currentAgentTabId（如果没有指定 tabId）
-    const TAB_CMDS = ['navigate','screenshot','get_html','get_text','click','type','key','scroll',
-      'wait_for','hover','find_elements','set_value','go_back','go_forward','select','eval','page_info'];
-    // 如果没有专属窗口且是 tab 操作，自动创建专属窗口，绝不操作用户自己的窗口
-    if (TAB_CMDS.includes(cmd) && !params.tabId && !currentAgentTabId) {
-      console.log('[Agent] No agent window, auto-creating one...');
-      try {
-        const winResult = await sendCommand('new_window', { url: 'about:blank', focused: false });
-        if (winResult && winResult.windowId) {
-          agentWindows.add(winResult.windowId);
-          currentAgentTabId = winResult.tabId || null;
-          console.log(`[Agent] Auto-created window ${winResult.windowId}, tab ${currentAgentTabId}`);
-        }
-      } catch(e) { console.log('[Agent] Failed to auto-create window:', e.message); }
-    }
-    if (TAB_CMDS.includes(cmd) && !params.tabId && currentAgentTabId) {
-      params.tabId = currentAgentTabId;
-    }
-    // 操作前显示提示条
-    const indicatorTabId = params.tabId || currentAgentTabId;
-    if (INDICATOR_CMDS.includes(cmd) && indicatorTabId) {
-      await showAgentIndicator(indicatorTabId, cmd);
-    }
-    const result = await sendCommand(cmd, params);
-    // 操作完成后隐藏提示条（navigate 稍等页面加载后再隐藏）
-    if (INDICATOR_CMDS.includes(cmd) && indicatorTabId) {
-      if (cmd === 'navigate') {
-        setTimeout(() => hideAgentIndicator(indicatorTabId), 1500);
-      } else {
-        await hideAgentIndicator(indicatorTabId);
-      }
-    }
-    // 自动记录 agent 开的窗口和 tab
-    if (cmd === 'new_window' && result && result.windowId) {
-      agentWindows.add(result.windowId);
-      currentAgentTabId = result.tabId || null;
-      console.log(`[Agent] Tracking window ${result.windowId}, tab ${currentAgentTabId}`);
-    }
-    if (cmd === 'new_tab' && result && result.tabId) {
-      currentAgentTabId = result.tabId;
-      console.log(`[Agent] Current agent tab: ${currentAgentTabId}`);
-    }
-    // navigate 完成后自动将 agent tab 置于专属窗口的前台（不影响东哥的窗口焦点）
-    if (cmd === 'navigate' && currentAgentTabId) {
-      try {
-        await sendCommand('focus_tab', { tabId: currentAgentTabId });
-      } catch(e) { /* ignore */ }
-    }
-    res.json({ ok: true, result });
-  }
-  catch (e) { res.status(500).json({ error: e.message }); }
-};
-
-// 查询 agent 管理的窗口
-app.get('/agent_windows', async (req, res) => {
-  try {
-    // 浏览器未连接时，只有已触发超时清空才返回空（短暂抖动不清空）
-    if (!extensionSocket || extensionSocket.readyState !== extensionSocket.OPEN) {
-      // 如果定时器还在跑，说明是短暂断线，保留旧数据
-      if (agentWindows._clearTimer) {
-        return res.json({ ok: true, windowIds: Array.from(agentWindows), reconnecting: true });
-      }
-      agentWindows.clear();
-      return res.json({ ok: true, windowIds: [] });
-    }
-    // 通过 tabs 列表验证窗口是否还存在，自动清理已关闭的
-    const tabs = await sendCommand('tabs', {});
-    const liveWindowIds = new Set(tabs.map(t => t.windowId));
-    for (const wid of Array.from(agentWindows)) {
-      if (!liveWindowIds.has(wid)) {
-        agentWindows.delete(wid);
-        console.log(`[Agent] Window ${wid} no longer exists, removed from tracking`);
-      }
-    }
-  } catch (e) {
-    // 出错时清空，宁可重建也不用死数据
-    agentWindows.clear();
-    console.log('[Agent] Error checking windows, cleared tracking:', e.message);
-  }
-  res.json({ ok: true, windowIds: Array.from(agentWindows) });
-});
-
-// 关闭所有 agent 管理的窗口
-app.post('/agent_windows/close_all', async (req, res) => {
-  const ids = Array.from(agentWindows);
-  const results = [];
-  for (const wid of ids) {
-    try {
-      await sendCommand('close_window', { windowId: wid });
-      agentWindows.delete(wid);
-      results.push({ windowId: wid, ok: true });
-    } catch (e) {
-      results.push({ windowId: wid, error: e.message });
-    }
-  }
-  res.json({ ok: true, closed: results });
-});
-
-app.get('/tabs', async (req, res) => {
-  try { res.json({ ok: true, tabs: await sendCommand('tabs', {}) }); }
-  catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// /ensure_tab：确保有一个可用的 agent tab，返回 tabId
-// 逻辑：找已有 agent 窗口 → 找其中可用 tab → 没有则 new_tab（不开新窗口）
-// 比特浏览器下 new_tab 返回 bitbrowser:// 没关系，navigate 后再调一次即可
-app.post('/ensure_tab', async (req, res) => {
-  try {
-    // 1. 检查已有 agent 窗口
-    const tabs = await sendCommand('tabs', {});
-    const agentWinIds = Array.from(agentWindows);
-    const agentTabs = tabs.filter(t => agentWinIds.includes(t.windowId));
-    // 2. 找一个非 bitbrowser:// 且有效的 tab
-    const usable = agentTabs.find(t => t.url && !t.url.startsWith('bitbrowser') && !t.url.startsWith('chrome://'));
-    if (usable) {
-      currentAgentTabId = usable.id;
-      return res.json({ ok: true, tabId: usable.id, windowId: usable.windowId, url: usable.url, reused: true });
-    }
-    // 3. 有 agent 窗口但没有可用 tab → 只开新 tab，不开新窗口
-    if (agentWinIds.length > 0) {
-      const winId = agentWinIds[0];
-      const newTab = await sendCommand('new_tab', { windowId: winId });
-      const tabId = newTab.tabId;
-      currentAgentTabId = tabId;
-      agentWindows.add(winId);
-      return res.json({ ok: true, tabId, windowId: winId, url: '', reused: false, note: 'new_tab in existing window' });
-    }
-    // 4. 完全没有 agent 窗口 → 只此一次开新窗口
-    const win = await sendCommand('new_window', { focused: false });
-    agentWindows.add(win.windowId);
-    currentAgentTabId = win.tabId;
-    return res.json({ ok: true, tabId: win.tabId, windowId: win.windowId, url: '', reused: false, note: 'new_window (first time only)' });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/page_info', route('page_info'));
-
-// 页面快照：返回紧凑 JSON（url/title/interactive元素列表），供 AI 直接读取操作
-// 支持 GET /snapshot?tabId=xxx 或 POST /snapshot {tabId:xxx}
-app.post('/snapshot', handleSnapshot);
-app.get('/snapshot', handleSnapshot);
-async function handleSnapshot(req, res) {
-  try {
-    const script = `(function() {
-      function bestSelector(el) {
-        if (el.id) return '#' + el.id;
-        if (el.name) return el.tagName.toLowerCase() + '[name="' + el.name + '"]';
-        if (el.getAttribute('data-testid')) return '[data-testid="' + el.getAttribute('data-testid') + '"]';
-        const cls = [...el.classList].slice(0,2).join('.');
-        return el.tagName.toLowerCase() + (cls ? '.' + cls : '');
-      }
-      // 直接用 querySelectorAll('*') 遍历所有元素
-      const all = [...document.querySelectorAll('*')];
-      const result = [];
-      const seen = new Set();
-      for (const el of all) {
-        const r = el.getBoundingClientRect();
-        if (r.width < 5 || r.height < 5) continue;
-        const text = (el.innerText || el.textContent || '').trim();
-        if (!text && el.tagName !== 'IMG') continue;
-        const key = el.tagName + '|' + text.slice(0,30);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        result.push({
-          tag: el.tagName.toLowerCase(),
-          text: text.slice(0, 100),
-          href: el.href?.slice(0, 120) || undefined
-        });
-        if (result.length >= 200) break;
-      }
-      return JSON.stringify({ url: location.href, title: document.title, interactive: result });
-    })()`;
-    const tabId = req.query.tabId ? parseInt(req.query.tabId) : (req.body && req.body.tabId ? parseInt(req.body.tabId) : undefined);
-    const result = await sendCommand('eval', { expression: script, ...(tabId ? { tabId } : {}) });
-    const data = typeof result === 'string' ? JSON.parse(result) : result;
-    res.json({ ok: true, result: data });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-}
-
-['navigate','screenshot','get_html','get_text','click','type','key','scroll',
- 'wait_for','get_cookies','new_tab','new_window','close_tab','focus_tab','hover','hotkey',
- 'find_elements','set_value','go_back','go_forward','select','eval',
- 'get_browser_state','click_element','input_text_element','ping_page_controller','debug_dom',
- 'get_ax_tree','fetch_with_cookies','cdp_click','cdp_type','network_capture','console_capture'].forEach(cmd => {
-  app.post('/' + cmd, route(cmd));
-});
-
-// ── smart_locate：语义定位元素，融合 eval + browser_state 索引 ──
-app.post('/smart_locate', async (req, res) => {
-  try {
-    const tabId = req.body && req.body.tabId ? parseInt(req.body.tabId) : undefined;
-    if (!tabId) return res.status(400).json({ error: 'tabId is required' });
-    const intent = (req.body.intent || '').toLowerCase();
-
-    // Step 1: eval 语义扫描，按 intent 归类
-    const evalScript = `(function(){
-      var inputs = [...document.querySelectorAll('input,textarea,search')]
-        .filter(e=>e.offsetParent!==null)
-        .map(e=>({tag:'input',placeholder:e.placeholder,type:e.type,id:e.id,name:e.name,
-          dataE2e:e.dataset.e2e||null,rect:e.getBoundingClientRect()}));
-      var buttons = [...document.querySelectorAll('button,[role=button],[type=submit]')]
-        .filter(e=>e.offsetParent!==null && (e.innerText||'').trim())
-        .map(e=>({tag:'button',text:(e.innerText||'').trim().slice(0,40),id:e.id,
-          dataE2e:e.dataset.e2e||null,rect:e.getBoundingClientRect()}));
-      var links = [...document.querySelectorAll('nav a,header a,[role=navigation] a')]
-        .filter(e=>e.offsetParent!==null && (e.innerText||'').trim())
-        .map(e=>({tag:'a',text:(e.innerText||'').trim().slice(0,30),href:(e.href||'').slice(0,80)}));
-      var content = [...document.querySelectorAll('article,main,[role=main],[class*=content],[class*=article],[class*=feed]')]
-        .filter(e=>e.offsetParent!==null)
-        .map(e=>({tag:e.tagName.toLowerCase(),id:e.id,cls:e.className.slice(0,60)}));
-      var comments = [...document.querySelectorAll('[class*=comment],[data-e2e*=comment],[id*=comment]')]
-        .filter(e=>e.offsetParent!==null)
-        .map(e=>({tag:e.tagName.toLowerCase(),id:e.id,dataE2e:e.dataset.e2e||null,cls:e.className.slice(0,60)}));
-      return JSON.stringify({inputs:inputs.slice(0,8),buttons:buttons.slice(0,12),
-        links:links.slice(0,10),content:content.slice(0,5),comments:comments.slice(0,5)});
-    })()`;
-    const evalResult = await sendCommand('eval', { tabId, expression: evalScript });
-    const semantic = typeof evalResult === 'string' ? JSON.parse(evalResult) : evalResult;
-
-    // Step 2: 获取 browser_state 拿索引
-    const stateResult = await sendCommand('get_browser_state', { tabId });
-    const stateContent = (stateResult && stateResult.content) ? stateResult.content : '';
-
-    // Step 3: 根据 intent 匹配最佳元素，并在 browser_state 里找对应索引
-    function findIndex(text, placeholder) {
-      const lines = stateContent.split('\n');
-      for (const line of lines) {
-        if (text && line.toLowerCase().includes(text.toLowerCase())) {
-          const m = line.match(/^\[(\d+)\]/);
-          if (m) return parseInt(m[1]);
-        }
-        if (placeholder && line.toLowerCase().includes(placeholder.toLowerCase())) {
-          const m = line.match(/^\[(\d+)\]/);
-          if (m) return parseInt(m[1]);
-        }
-      }
-      return null;
-    }
-
-    let matches = [];
-    if (intent.includes('搜索') || intent.includes('search') || intent.includes('输入')) {
-      for (const inp of semantic.inputs) {
-        const idx = findIndex(inp.text, inp.placeholder);
-        matches.push({ type: 'input', placeholder: inp.placeholder, id: inp.id,
-          dataE2e: inp.dataE2e, browserStateIndex: idx, confidence: inp.placeholder ? 'high' : 'medium' });
-      }
-    } else if (intent.includes('评论') || intent.includes('comment')) {
-      for (const c of semantic.comments) {
-        const idx = findIndex(c.dataE2e || c.cls.split(' ')[0]);
-        matches.push({ type: 'comment', id: c.id, dataE2e: c.dataE2e, cls: c.cls,
-          browserStateIndex: idx, confidence: c.dataE2e ? 'high' : 'low' });
-      }
-    } else if (intent.includes('内容') || intent.includes('文章') || intent.includes('content')) {
-      for (const c of semantic.content) {
-        matches.push({ type: 'content', tag: c.tag, id: c.id, cls: c.cls,
-          browserStateIndex: null, confidence: c.id ? 'high' : 'medium' });
-      }
-    } else if (intent.includes('按钮') || intent.includes('button') || intent.includes('点击')) {
-      for (const b of semantic.buttons) {
-        const idx = findIndex(b.text);
-        matches.push({ type: 'button', text: b.text, id: b.id, dataE2e: b.dataE2e,
-          browserStateIndex: idx, confidence: b.dataE2e ? 'high' : (idx ? 'medium' : 'low') });
-      }
-    } else {
-      // 无明确 intent，返回所有关键元素概览
-      matches = [
-        ...semantic.inputs.slice(0,3).map(e=>({type:'input',placeholder:e.placeholder,browserStateIndex:findIndex(null,e.placeholder)})),
-        ...semantic.buttons.slice(0,5).map(e=>({type:'button',text:e.text,browserStateIndex:findIndex(e.text)})),
-        ...semantic.content.slice(0,2).map(e=>({type:'content',tag:e.tag,id:e.id})),
-      ];
-    }
-
-    res.json({ ok: true, intent, matches, hint: '用 browserStateIndex 直接调 click_element/input_text_element' });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// ── snapshot_ai：AI优化快照，返回稳定 ref + 文本树 ──────────────────
-app.post('/snapshot_ai', async (req, res) => {
-  try {
-    const tabId = req.body && req.body.tabId ? parseInt(req.body.tabId) : undefined;
-    const script = `(function() {
-      // 生成稳定 ref：优先 data-e2e > data-testid > id > name > aria-label > 哈希
-      function stableRef(el, idx) {
-        const v = el.dataset.e2e || el.dataset.testid || el.id ||
-                  el.name || el.getAttribute('aria-label') || el.getAttribute('placeholder');
-        if (v) return v.replace(/\\s+/g,'_').slice(0,30);
-        return 'e' + idx;
-      }
-      const tags = ['a','button','input','textarea','select','[role=button]','[role=link]','[role=tab]','[role=menuitem]','[role=option]'];
-      const allEls = [...document.querySelectorAll(tags.join(','))]
-        .filter(el => el.offsetParent !== null);
-      const refs = {};
-      const lines = [];
-      const usedRefs = {};
-      allEls.forEach((el, idx) => {
-        let ref = stableRef(el, idx);
-        // 去重：如果 ref 已用，加 _N 后缀
-        if (usedRefs[ref] !== undefined) {
-          usedRefs[ref]++;
-          ref = ref + '_' + usedRefs[ref];
-        } else { usedRefs[ref] = 0; }
-        const role = el.getAttribute('role') || el.tagName.toLowerCase();
-        const name = (el.innerText || el.value || el.getAttribute('placeholder') || el.getAttribute('aria-label') || '').trim().slice(0,60);
-        const href = el.href ? el.href.slice(0,100) : undefined;
-        refs[ref] = { role, name, tag: el.tagName.toLowerCase(), href };
-        let line = '[' + ref + '] <' + role + '>';
-        if (name) line += ' ' + name;
-        if (href) line += ' (' + href + ')';
-        lines.push(line);
-      });
-      // 页面主要文本内容（非交互元素）
-      const bodyText = (document.body.innerText || '').replace(/\\s+/g,' ').trim().slice(0,500);
-      return JSON.stringify({
-        url: location.href, title: document.title,
-        text: lines.join('\\n'),
-        refs,
-        bodyText
-      });
-    })()`;
-    const result = await sendCommand('eval', { expression: script, ...(tabId ? { tabId } : {}) });
-    const data = typeof result === 'string' ? JSON.parse(result) : result;
-    res.json({ ok: true, result: data });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// ── fill_batch：批量填写表单字段 ──────────────────────────────────
-app.post('/fill_batch', async (req, res) => {
-  try {
-    const tabId = req.body && req.body.tabId ? parseInt(req.body.tabId) : undefined;
-    const fields = req.body.fields; // [{ref, value, type?}]
-    if (!Array.isArray(fields) || fields.length === 0) {
-      return res.status(400).json({ error: 'fields must be a non-empty array' });
-    }
-    const script = `(function(fields) {
-      const tags = ['a','button','input','textarea','select','[role=button]','[role=link]','[role=tab]','[role=menuitem]','[role=option]'];
-      const allEls = [...document.querySelectorAll(tags.join(','))].filter(el => el.offsetParent !== null);
-      function stableRef(el, idx) {
-        const v = el.dataset.e2e || el.dataset.testid || el.id ||
-                  el.name || el.getAttribute('aria-label') || el.getAttribute('placeholder');
-        if (v) return v.replace(/\\s+/g,'_').slice(0,30);
-        return 'e' + idx;
-      }
-      const usedRefs = {};
-      const refMap = {};
-      allEls.forEach((el, idx) => {
-        let ref = stableRef(el, idx);
-        if (usedRefs[ref] !== undefined) { usedRefs[ref]++; ref = ref + '_' + usedRefs[ref]; }
-        else { usedRefs[ref] = 0; }
-        refMap[ref] = el;
-      });
-      const results = [];
-      for (const f of fields) {
-        const el = refMap[f.ref];
-        if (!el) { results.push({ ref: f.ref, ok: false, error: 'ref not found' }); continue; }
-        try {
-          el.focus();
-          if (el.tagName === 'SELECT') {
-            el.value = f.value;
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-          } else if (f.type === 'checkbox' || f.type === 'radio') {
-            el.checked = f.checked !== undefined ? f.checked : true;
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-          } else {
-            el.value = '';
-            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value') ||
-                                           Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value');
-            if (nativeInputValueSetter) nativeInputValueSetter.set.call(el, f.value);
-            else el.value = f.value;
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-          }
-          results.push({ ref: f.ref, ok: true });
-        } catch(err) { results.push({ ref: f.ref, ok: false, error: err.message }); }
-      }
-      return JSON.stringify(results);
-    })(${JSON.stringify(fields)})`;
-    const result = await sendCommand('eval', { expression: script, ...(tabId ? { tabId } : {}) });
-    const data = typeof result === 'string' ? JSON.parse(result) : result;
-    res.json({ ok: true, results: data });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// ── wait_for_text：等待页面出现指定文本或元素 ──────────────────────
-app.post('/wait_for_text', async (req, res) => {
-  try {
-    const tabId = req.body && req.body.tabId ? parseInt(req.body.tabId) : undefined;
-    const text = req.body.text || '';
-    const selector = req.body.selector || '';
-    const timeout = Math.min(req.body.timeout || 10000, 30000);
-    const interval = 500;
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
-      const script = selector
-        ? `!!document.querySelector(${JSON.stringify(selector)})`
-        : `document.body.innerText.includes(${JSON.stringify(text)})`;
-      const result = await sendCommand('eval', { expression: script, ...(tabId ? { tabId } : {}) });
-      if (result === true || result === 'true') {
-        return res.json({ ok: true, elapsed: Date.now() - start });
-      }
-      await new Promise(r => setTimeout(r, interval));
-    }
-    res.status(408).json({ ok: false, error: 'timeout', elapsed: timeout });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// ── 版本检查端点 ────────────────────────────────────────────────
-app.get('/version', (req, res) => {
-  res.json({ version: '2.5.0', ok: true });
-});
-
-// ── 启动 ────────────────────────────────────────────────
+// ── 启动服务器 ──────────────────────────────────────────
 server.listen(PORT, HOST, () => {
-  console.log(`Chrome Bridge Server running on http://${HOST}:${PORT}`);
-  console.log(`WebSocket endpoint: ws://${HOST}:${PORT}/ws`);
-  console.log(`Config: ${CONFIG_FILE}`);
-  console.log(`Paired: ${!!config.sessionToken}`);
-
+  console.log(`[CloudHand] CDP Bridge v3.0 已启动: http://${HOST}:${PORT}`);
+  console.log(`[CloudHand] 模式: ${LOCAL_MODE ? '本地' : '远程'}`);
+  console.log(`[CloudHand] /cdp WebSocket 端点已就绪（供 Playwright 连接）`);
+  console.log(`[CloudHand] 等待 Chrome 扩展连接...`);
 });
+

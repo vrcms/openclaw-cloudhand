@@ -19,8 +19,8 @@ CloudHand is a bridge between AI agents and your Chrome browser. It features a *
 - **Dual-Mode Parallel**: Simultaneous control from local and remote AI agents.
 - **CLI Commander**: Built-in `ch.js` tool supporting semantic chaining (e.g., `type {search_box} hello`).
 - **Self-Learning Knowledge Base**: Automatically builds site-specific landmarks in `./.data-browser-knowledge/`.
-- **Expert APIs**: Native support for `ensure_tab`, `smart_locate`, and CDP-based trusted clicks.
-- **Pairing-Free**: Auto-detection for local mode — no 6-digit codes required.
+- **Expert APIs**: Native support for Playwright-powered `snapshot` and unified `act` interface.
+- **Secure Connection**: Token-based authentication replacing the old 6-digit pairing code mechanism.
 
 ---
 
@@ -29,14 +29,14 @@ CloudHand is a bridge between AI agents and your Chrome browser. It features a *
 CloudHand includes a powerful CLI tool `cloudhand-bridge/ch.js` to simplify AI interactions:
 
 ```bash
-# 1. Semantic Batch Mode (Recommended: Handles TabIDs & Locating automatically)
-node cloudhand-bridge/ch batch "ensure_tab; navigate google.com; type {search_box} openclaw\n"
+# 1. Get semantic snapshot (Playwright ariaSnapshot)
+node cloudhand-bridge/ch snapshot
 
-# 2. Quick Search (Direct access with retries and summarization)
-node cloudhand-bridge/ch quick_search "https://www.google.com/search?q=openclaw"
+# 2. Interact via ref (e.g., type into search box and submit)
+node cloudhand-bridge/ch act type e12 "openclaw" --submit
 
-# 3. Cognitive Learning (Extract page skeleton for AI analysis & archiving)
-node cloudhand-bridge/ch learn
+# 3. Take a screenshot with labeled interactive elements
+node cloudhand-bridge/ch screenshot_labels
 ```
 
 ---
@@ -63,23 +63,21 @@ Choose the scenario that fits your needs:
 
 The CloudHand extension is required for both operating modes.
 
-1. **Get Download Link:**
-   - **Remote Mode**: Ask your AI assistant: "Give me the download link". It will generate a 120s temporary link: `http://YOUR_VPS:9876/download-ext?t=xxx`.
-   - **Local Mode**: Simply use the `extension/` folder in this repository.
+1. **Get Extension:**
+   - **Remote Mode**: The extension zip is automatically generated at `~/.openclaw/extensions/cloudhand/extension.zip` upon installation.
+   - **Local Mode**: Use the `extension/` folder in this repository.
 
 2. **Load in Chrome:**
    - Open Chrome and navigate to `chrome://extensions/`.
    - Enable **"Developer mode"** in the top right corner.
-   - Click **"Load unpacked"** in the top left.
-   - Select the **`extension`** folder from this project.
+   - Click **"Load unpacked"** and select the unzipped `extension` folder.
 
-3. **Pair with AI (Remote Mode only):**
-   - Ask your AI: "Give me the pairing code". You will receive a **6-digit code** (valid for 120s).
+3. **Connect to Bridge:**
    - Click the CloudHand icon in your Chrome toolbar.
-   - Enter the code and click **"Pair & Connect"**.
-   - ✅ When the status changes to **"Connected"**, you are ready.
+   - Connect using your WebSocket URL with your token (e.g., `ws://127.0.0.1:9876/ws?token=local-mode-token` for local mode).
+   - The status will change to **"Connected"**.
 
-> 💡 **Pro Tip**: Pairing info is stored locally. You don't need to re-pair unless you reinstall the extension. Local mode auto-detects `127.0.0.1` and requires no pairing code.
+> 💡 **Pro Tip**: The extension automatically saves your connection URL. Local mode uses the built-in `local-mode-token`.
 
 ---
 
@@ -88,14 +86,14 @@ The CloudHand extension is required for both operating modes.
 | Endpoint | Method | Description |
 |------|------|------|
 | `/status` | GET | Check dual-mode connection status |
-| `/token` | GET | Get local API Token (127.0.0.1 only) |
+| `/list_tabs` | GET | List all known browser tabs |
 | `/ensure_tab` | POST | Get/Create a dedicated agent tab |
-| `/smart_locate` | POST | Locate elements by intent (e.g., "search box") |
 | `/navigate` | POST | Navigate to target URL |
-| `/get_browser_state` | POST | Get interactive element tree and indices |
-| `/click_element` | POST | Click by index (Semantic: `click {target}`) |
-| `/input_text_element` | POST | Input by index (Semantic: `type {target} text\n`) |
-| `/get_ax_tree` | POST | Get full Accessibility Tree |
+| `/snapshot` | POST | ⭐ Get Playwright ariaSnapshot with `ref` IDs |
+| `/act` | POST | ⭐ Interact with elements via `ref` (click/type/etc) |
+| `/screenshot_with_labels`| POST | Screenshot with interactive element borders |
+| `/get_page_info` | GET/POST | Get current page URL and title |
+| `/cdp` | POST | Passthrough arbitrary CDP commands |
 | `/eval` | POST | Execute custom JavaScript |
 
 ## Development

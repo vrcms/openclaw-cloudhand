@@ -19,8 +19,8 @@
 - **双路并行**：真正实现本地 AI 与远程 VPS AI 同时操控，无感切换。
 - **命令行指挥官**：自带 `ch.js` 工具，支持语义连招（如 `type {搜索框} hello`）和自动批处理。
 - **自学习经验库**：AI 操作后自动在 `./.data-browser-knowledge/` 沉淀站点经验，越用越快。
-- **专家级交互**：内置确保专属窗口（`ensure_tab`）、语义定位、CDP 真实点击等高级 API。
-- **免配对体验**：本地模式自动感应，告别 6 位配对码。
+- **专家级交互**：内置确保专属窗口（`ensure_tab`）、基于 Playwright 的语义快照（`snapshot`）和统一操作接口（`act`）。
+- **极简安全连接**：基于 Token 的直连机制，彻底告别繁琐的 6 位配对码。
 
 ---
 
@@ -29,14 +29,14 @@
 本项目内置了一个强大的 CLI 工具 `cloudhand-bridge/ch.js`，让 AI 操作变得异常简单：
 
 ```bash
-# 1. 语义批处理连招 (最推荐：自动处理 TabID 和 语义定位)
-node cloudhand-bridge/ch batch "ensure_tab; navigate baidu.com; type {搜索框} openclaw\n"
+# 1. 获取页面语义快照 (Playwright ariaSnapshot)
+node cloudhand-bridge/ch snapshot
 
-# 2. 一键直达搜索结果（带重试和摘要）
-node cloudhand-bridge/ch quick_search "https://www.baidu.com/s?wd=openclaw"
+# 2. 通过 ref 编号精确交互（输入并提交）
+node cloudhand-bridge/ch act type e12 "openclaw" --submit
 
-# 3. 深度认知学习（提取页面骨架，供 AI 分析并存档经验）
-node cloudhand-bridge/ch learn
+# 3. 带交互标签的页面截图
+node cloudhand-bridge/ch screenshot_labels
 ```
 
 ---
@@ -63,23 +63,22 @@ node cloudhand-bridge/ch learn
 
 无论你使用哪种模式，都需要在你的 Chrome 浏览器中安装云手扩展。
 
-1. **获取下载链接：**
-   - **远程模式**：对 AI 说「给我云手的下载链接」，AI 会生成一个 120 秒有效的一次性链接：`http://你的VPS:9876/download-ext?t=xxx`。
+1. **获取扩展：**
+   - **远程模式**：安装完成后，会在 `~/.openclaw/extensions/cloudhand/extension.zip` 自动生成扩展包。
    - **本地模式**：直接使用项目源码中的 `extension/` 目录即可。
 
 2. **在 Chrome 中加载：**
    - 打开 Chrome，进入 `chrome://extensions/`（扩展程序管理）。
    - 开启右上角的 **“开发者模式”** 开关。
    - 点击左上角的 **“加载已解压的扩展程序”**。
-   - 选择本项目（或解压后）的 **`extension`** 文件夹。
+   - 选择解压后的 **`extension`** 文件夹。
 
-3. **与 AI 完成配对 (仅远程模式需要)：**
-   - 对 AI 说：「给我配对码」，AI 会回复一个 **6 位验证码**（120 秒有效）。
+3. **连接到 Bridge:**
    - 点击 Chrome 工具栏中的 CloudHand 图标。
-   - 输入 6 位验证码并点击 **“配对连接”**。
-   - ✅ 当图标下的状态变为 **“已连接”**，即表示配对成功。
+   - 填入包含 Token 的 WebSocket URL（本地模式默认为 `ws://127.0.0.1:9876/ws?token=local-mode-token`，远程模式使用你的 Token）。
+   - 点击 **“连接”**。图标下方的状态将变为 **“已连接”**。
 
-> 💡 **提示**：配对信息会保存在本地，除非你卸载扩展，否则以后无需再次配对。本地模式会自动识别 `127.0.0.1`，无需输入配对码。
+> 💡 **提示**：扩展会自动保存连接地址。一旦连接成功，以后重启浏览器会自动重连。
 
 ---
 
@@ -87,15 +86,15 @@ node cloudhand-bridge/ch learn
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/status` | GET | 查看本地/远程双路连接状态 |
-| `/token` | GET | 获取本地 API Token (127.0.0.1 专用) |
+| `/status` | GET | 查看连接状态 |
+| `/list_tabs` | GET | 列出所有已知的标签页 |
 | `/ensure_tab` | POST | 铁律：获取/创建不干扰用户的专属 Tab |
-| `/smart_locate` | POST | 语义定位：输入“搜索框”即可返回索引 |
 | `/navigate` | POST | 导航至目标 URL |
-| `/get_browser_state` | POST | 获取 DOM 树及可交互元素索引 |
-| `/click_element` | POST | 按索引点击 (语义版: `click {关键词}`) |
-| `/input_text_element` | POST | 按索引输入 (语义版: `type {关键词} 文本\n`) |
-| `/get_ax_tree` | POST | 获取无障碍树 (用于复杂 UI 探测) |
+| `/snapshot` | POST | ⭐ 获取带 ref 编号的语义快照 (Playwright) |
+| `/act` | POST | ⭐ 通过 ref 编号执行动作 (click/type/scroll等) |
+| `/screenshot_with_labels`| POST | 截图并框选标注交互元素 |
+| `/get_page_info`| GET/POST | 获取当前页面 URL 和 Title |
+| `/cdp` | POST | 透传任意 CDP 命令 |
 | `/eval` | POST | 执行自定义 JavaScript |
 
 ## 开发与调试

@@ -9,6 +9,7 @@ async function refreshUI() {
   const stored = await chrome.storage.local.get([
     'localConnected',
     'remoteConnected',
+    'remoteProtocol',
     'remoteHost',
     'remotePort',
     'remoteToken',
@@ -24,6 +25,7 @@ async function refreshUI() {
   const host = stored.remoteHost || ''
   const port = stored.remotePort || ''
   const token = stored.remoteToken || ''
+  const protocol = stored.remoteProtocol || (host === '127.0.0.1' || host === 'localhost' ? 'ws' : 'wss')
   $('remoteDot').className = `dot ${remoteUp ? 'green' : host ? 'red' : 'yellow'}`
   $('remoteStatus').textContent = remoteUp ? '已连接' : (host ? '未连接' : '未配置')
   $('remoteLabel').textContent = host ? `远程 (${host}${port ? ':' + port : ''})` : '远程'
@@ -31,7 +33,7 @@ async function refreshUI() {
   // 回填 URL 输入框（仅当用户没有正在编辑时）
   if (document.activeElement !== $('remoteUrl')) {
     if (host) {
-      $('remoteUrl').value = `ws://${host}${port ? ':' + port : ':9876'}/ws?token=${token}`
+      $('remoteUrl').value = `${protocol}://${host}${port ? ':' + port : ''}/ws?token=${token}`
     } else {
       $('remoteUrl').value = ''
     }
@@ -70,18 +72,20 @@ function parseWsUrl(input) {
     // 用 URL 解析（ws:// 替换为 http:// 以便 URL 构造器识别）
     const parsed = new URL(url.replace(/^ws/, 'http'))
     const host = parsed.hostname
-    const port = parseInt(parsed.port, 10) || 9876
+    const port = parseInt(parsed.port, 10) || (url.startsWith('wss://') ? 443 : 9876)
     const token = parsed.searchParams.get('token') || ''
+    const protocol = url.startsWith('wss://') ? 'wss' : 'ws'
     if (!host) return null
-    return { host, port, token }
+    return { protocol, host, port, token }
   } catch {
     // URL 解析失败，尝试简单的 host:port 格式
     const clean = s.replace(/^(wss?|https?):\/\//, '').replace(/\/.*$/, '')
+    const protocol = s.startsWith('wss://') || s.startsWith('https://') ? 'wss' : 'ws'
     const parts = clean.split(':')
     const host = parts[0]
     const port = parts.length > 1 ? parseInt(parts[1], 10) : 9876
     if (!host) return null
-    return { host, port, token: '' }
+    return { protocol, host, port, token: '' }
   }
 }
 
@@ -105,6 +109,7 @@ $('btnConnect').addEventListener('click', async () => {
 
   // 写入配置，background.js 监听 storage 变化后自动连接
   await chrome.storage.local.set({
+    remoteProtocol: parsed.protocol,
     remoteHost: parsed.host,
     remotePort: parsed.port,
     remoteToken: parsed.token,

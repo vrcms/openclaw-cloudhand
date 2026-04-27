@@ -1343,14 +1343,15 @@ async function ensureRemoteConnection() {
   if (remoteWs && remoteWs.readyState === WebSocket.OPEN) return
   if (remoteConnectPromise) return await remoteConnectPromise
 
-  const stored = await chrome.storage.local.get(['remoteHost', 'remotePort', 'remoteToken'])
+  const stored = await chrome.storage.local.get(['remoteProtocol', 'remoteHost', 'remotePort', 'remoteToken'])
   const host = (stored.remoteHost || '').trim()
   const port = stored.remotePort || 9876
   const token = (stored.remoteToken || '').trim()
+  const protocol = stored.remoteProtocol || (host === '127.0.0.1' || host === 'localhost' ? 'ws' : 'wss')
   if (!host || !token) return // 未配置，跳过
 
   remoteConnectPromise = (async () => {
-    const wsUrl = buildRemoteWsUrl(host, port, token)
+    const wsUrl = buildRemoteWsUrl(protocol, host, port, token)
 
     const ws = new WebSocket(wsUrl)
     remoteWs = ws

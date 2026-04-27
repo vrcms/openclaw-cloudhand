@@ -40,15 +40,15 @@ export async function buildRelayWsUrl(host, port, gatewayToken) {
   return `${protocol}://${h}:${port}/ws?token=${encodeURIComponent(token)}`;
 }
 
-// 构建远程 WS URL（始终使用 wss，除非是本地地址）
-export function buildRemoteWsUrl(host, port, token) {
+// 构建远程 WS URL
+export function buildRemoteWsUrl(protocol, host, port, token) {
   const h = String(host || "").trim();
   const t = String(token || "").trim();
   if (!h || !t) {
     throw new Error("Missing remote host or token");
   }
-  const protocol = h === "127.0.0.1" || h === "localhost" ? "ws" : "wss";
-  return `${protocol}://${h}:${port || 9876}/ws?token=${encodeURIComponent(t)}`;
+  const p = protocol || (h === "127.0.0.1" || h === "localhost" ? "ws" : "wss");
+  return `${p}://${h}:${port || 9876}/ws?token=${encodeURIComponent(t)}`;
 }
 
 export function isRetryableReconnectError(err) {

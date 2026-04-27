@@ -1,5 +1,6 @@
-// CloudHand Popup - 连接状态管理
-// 从 chrome.storage.local 读写配置，与 background.js 通过 storage 事件通信
+// CloudHand Popup v2.7.0 - 连接状态管理
+// 通过 chrome.storage.local 与 background.js 通信
+// 远程连接：地址 + Token 直连（无配对码）
 
 const $ = (id) => document.getElementById(id)
 
@@ -24,7 +25,7 @@ async function refreshUI() {
   const port = stored.remotePort || ''
   $('remoteDot').className = `dot ${remoteUp ? 'green' : host ? 'red' : 'yellow'}`
   $('remoteStatus').textContent = remoteUp ? '已连接' : (host ? '未连接' : '未配置')
-  $('remoteLabel').textContent = host ? `${host}${port ? ':' + port : ''}` : '未配置'
+  $('remoteLabel').textContent = host ? `远程 (${host}${port ? ':' + port : ''})` : '远程'
 
   // 填充输入框（仅当用户没有正在编辑时）
   if (document.activeElement !== $('remoteHost')) {
@@ -37,14 +38,28 @@ async function refreshUI() {
   // 按钮状态
   $('btnConnect').disabled = remoteUp
   $('btnDisconnect').disabled = !remoteUp && !host
+
+  // Tab 数量信息
+  updateTabsInfo()
+}
+
+// 获取已 attach 的 tab 数量
+async function updateTabsInfo() {
+  try {
+    const stored = await chrome.storage.session.get(['persistedTabs'])
+    const count = (stored.persistedTabs || []).length
+    $('tabsInfo').textContent = count > 0 ? `已 Attach ${count} 个 Tab` : ''
+  } catch {
+    $('tabsInfo').textContent = ''
+  }
 }
 
 // 解析 host:port 输入
 function parseHostPort(input) {
   const s = (input || '').trim()
   if (!s) return null
-  // 去掉协议前缀
-  const clean = s.replace(/^(wss?|https?):\/\//, '')
+  // 去掉协议前缀和路径
+  const clean = s.replace(/^(wss?|https?):\/\//, '').replace(/\/.*$/, '')
   const parts = clean.split(':')
   const host = parts[0]
   const port = parts.length > 1 ? parseInt(parts[1], 10) : 9876
@@ -56,7 +71,7 @@ function parseHostPort(input) {
 $('btnConnect').addEventListener('click', async () => {
   const parsed = parseHostPort($('remoteHost').value)
   if (!parsed) {
-    $('errorMsg').textContent = '请输入有效的远程地址'
+    $('errorMsg').textContent = '请输入有效的服务器地址'
     $('errorMsg').style.display = 'block'
     return
   }
@@ -105,7 +120,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 // Attach/Detach 当前 Tab
 $('btnAttach').addEventListener('click', async () => {
-  // 通过 runtime message 通知 background.js
   chrome.runtime.sendMessage({ action: 'toggleAttach' })
   setTimeout(refreshUI, 500)
 })

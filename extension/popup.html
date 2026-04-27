@@ -6,7 +6,7 @@
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
-  width: 320px;
+  width: 340px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 13px;
   color: #e0e0e0;
@@ -57,7 +57,7 @@ body {
 .dot.green { background: #22c55e; box-shadow: 0 0 6px #22c55e88; }
 .dot.red { background: #ef4444; box-shadow: 0 0 6px #ef444488; }
 .dot.yellow { background: #f59e0b; box-shadow: 0 0 6px #f59e0b88; }
-.status-label { flex: 1; }
+.status-label { flex: 1; font-size: 12px; }
 .status-value {
   font-size: 11px;
   color: #9ca3af;
@@ -105,6 +105,7 @@ body {
 }
 .btn:hover { opacity: 0.85; }
 .btn:active { opacity: 0.7; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-connect {
   background: #3b82f6;
   color: #fff;
@@ -119,6 +120,17 @@ body {
   margin-top: 6px;
   display: none;
 }
+.hint {
+  font-size: 10px;
+  color: #6b7280;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+.tabs-info {
+  font-size: 11px;
+  color: #9ca3af;
+  padding: 4px 0;
+}
 </style>
 </head>
 <body>
@@ -127,40 +139,49 @@ body {
     <span class="version">v2.7.0</span>
   </div>
 
-  <!-- 本地连接状态 -->
+  <!-- 连接状态 -->
   <div class="section">
-    <div class="section-title">本地连接</div>
+    <div class="section-title">连接状态</div>
     <div class="status-row">
       <span class="dot" id="localDot"></span>
-      <span class="status-label">127.0.0.1</span>
+      <span class="status-label">本地 (127.0.0.1)</span>
       <span class="status-value" id="localStatus">检测中...</span>
     </div>
-    <div class="btn-row" style="margin-top: 6px;">
-      <button class="btn btn-connect" id="btnAttach">Attach 当前 Tab</button>
-    </div>
-  </div>
-
-  <!-- 远程连接 -->
-  <div class="section">
-    <div class="section-title">远程连接</div>
     <div class="status-row">
       <span class="dot" id="remoteDot"></span>
-      <span class="status-label" id="remoteLabel">未配置</span>
-      <span class="status-value" id="remoteStatus">未连接</span>
+      <span class="status-label" id="remoteLabel">远程</span>
+      <span class="status-value" id="remoteStatus">未配置</span>
     </div>
-    <div class="form-group" style="margin-top: 10px;">
-      <label>远程地址</label>
+    <div class="tabs-info" id="tabsInfo"></div>
+  </div>
+
+  <!-- 远程连接配置 -->
+  <div class="section">
+    <div class="section-title">远程连接</div>
+    <div class="form-group">
+      <label>服务器地址</label>
       <input type="text" id="remoteHost" placeholder="例如: 1.2.3.4:9876">
     </div>
     <div class="form-group">
       <label>Token</label>
       <input type="password" id="remoteToken" placeholder="远程服务器的认证 Token">
     </div>
+    <div class="hint">
+      连接地址: ws://&lt;地址&gt;/ws?token=&lt;Token&gt;
+    </div>
     <div class="btn-row">
       <button class="btn btn-connect" id="btnConnect">连接</button>
       <button class="btn btn-disconnect" id="btnDisconnect">断开</button>
     </div>
     <div class="error-msg" id="errorMsg"></div>
+  </div>
+
+  <!-- 当前 Tab 操作 -->
+  <div class="section">
+    <div class="section-title">当前 Tab</div>
+    <div class="btn-row">
+      <button class="btn btn-connect" id="btnAttach">Attach 当前 Tab</button>
+    </div>
   </div>
 </body>
 <script src="popup.js"></script>

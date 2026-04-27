@@ -2,7 +2,7 @@
 
 > High-speed Chrome control for AI agents (Local/Remote).
 
-[![Version](https://img.shields.io/badge/version-2.6.0-blue.svg)](https://github.com/vrcms/openclaw-cloudhand)
+[![Version](https://img.shields.io/badge/version-2.7.0-blue.svg)](https://github.com/vrcms/openclaw-cloudhand)
 [![OpenClaw Plugin](https://img.shields.io/badge/openclaw-plugin-orange.svg)](https://openclaw.ai)
 
 English | **[中文文档](README.zh.md)**
@@ -14,7 +14,7 @@ CloudHand is a bridge between AI agents and your Chrome browser. It features a *
 1. **Remote Mode**: Connects to a remote OpenClaw AI assistant on a VPS.
 2. **Local Mode (New)**: Connects to local AI agents (e.g., Claude Code, Gemini, Qwen).
 
-## 🌟 Key Features (v2.6.0)
+## 🌟 Key Features (v2.7.0)
 
 - **Dual-Mode Parallel**: Simultaneous control from local and remote AI agents.
 - **CLI Commander**: Built-in `ch.js` tool supporting semantic chaining (e.g., `type {search_box} hello`).

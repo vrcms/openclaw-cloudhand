@@ -535,13 +535,12 @@ app.post('/navigate', async (req, res) => {
     const sid = req.body.sessionId || agentSessionId;
     if (!sid) return res.status(400).json({ error: 'No attached tab. Call /ensure_tab first.' });
 
-    const result = await sendCdpCommand('Page.navigate', { url }, sid);
+    const targetId = req.body.targetId || attachedSessions.get(sid)?.targetId;
+    const page = await getPlaywrightPage(targetId);
+    await page.goto(url, { timeout: 20000 });
+    if (targetId) pageRefs.delete(targetId);
 
-    // 等待页面加载完成
-    // 简化实现：等待 1.5 秒让页面有时间加载
-    await new Promise(r => setTimeout(r, 1500));
-
-    res.json({ ok: true, result });
+    res.json({ ok: true, url: page.url() });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -875,6 +874,36 @@ function buildRoleSnapshot(ariaSnapshot) {
     if (suffix) enhanced += suffix;
     result.push(enhanced);
   }
+
+  // ── 筛选栏文本拆分：将折叠的纯文本选项拆为独立 ref ──
+  // 场景：header 中的筛选按钮 (<span> 元素) 缺少 ARIA role，
+  // Playwright 把它们折叠成一行 "text: 全网内容 只看头条 不限时间"
+  // 检测：2-5 个短词（2-6 字），含中文，不含纯数字
+  const textReplacements = [];
+  for (let i = 0; i < result.length; i++) {
+    const line = result[i];
+    const textMatch = line.match(/^(\s*)-\s*text:\s*(.+)$/);
+    if (!textMatch) continue;
+    const [, indent, textContent] = textMatch;
+    const parts = textContent.trim().split(/\s+/);
+    if (parts.length < 2) continue;
+    if (!parts.every(p => p.length >= 1 && p.length <= 6)) continue;
+    if (!parts.every(p => /[\u4e00-\u9fff]/.test(p))) continue;
+    if (parts.some(p => /\d/.test(p))) continue;
+
+    const enhancedLines = [];
+    for (const part of parts) {
+      counter++;
+      const ref = `e${counter}`;
+      refs[ref] = { role: 'button', name: part, nth: 0, virtual: true };
+      enhancedLines.push(`${indent}- button "${part}" [ref=${ref}]`);
+    }
+    textReplacements.push({ index: i, replacement: enhancedLines });
+  }
+  for (const item of textReplacements.reverse()) {
+    result.splice(item.index, 1, ...item.replacement);
+  }
+
   return { snapshot: result.join('\n') || '(empty)', refs };
 }
 
@@ -911,12 +940,18 @@ function refLocator(page, ref, refs) {
   const normalized = ref.startsWith('@') ? ref.slice(1) : ref.startsWith('ref=') ? ref.slice(4) : ref;
   if (/^e\d+$/.test(normalized) && refs?.[normalized]) {
     const info = refs[normalized];
+    // 虚拟 ref（从文本拆分的筛选栏按钮）：原元素是 <span> 无 ARIA role，
+    // getByRole 会失败，改用精确文本匹配
+    if (info.virtual && info.name) {
+      const textLoc = page.getByText(info.name, { exact: true });
+      // 使用 last() 优先匹配下拉框选项（通常 append 在 body 末尾）
+      return info.nth > 0 ? textLoc.nth(info.nth) : textLoc.last();
+    }
     const locator = info.name
       ? page.getByRole(info.role, { name: info.name, exact: true })
       : page.getByRole(info.role);
     return info.nth > 0 ? locator.nth(info.nth) : locator;
   }
-  // 回退：当作 CSS selector
   return page.locator(normalized);
 }
 
@@ -941,8 +976,28 @@ app.post('/act', async (req, res) => {
       }
     }
 
-    // ── 记录操作前的 Tab 列表（用于检测新 Tab） ──
-    const tabsBefore = new Set(knownTargets.keys());
+    // ── 确保 refs 缓存（首次 act 或 navigate 后自动加载） ──
+    if (!cachedRefs) {
+      try {
+        const ariaText = await page.locator('body').ariaSnapshot({ ref: true });
+        const built = buildRoleSnapshot(ariaText);
+        if (targetId) pageRefs.set(targetId, { refs: built.refs, page });
+        cachedRefs = built.refs;
+      } catch {}
+    }
+
+    // ── 记录操作前的 Tab 列表和页面 URL ──
+    const urlBefore = page.url();
+    let pagesBefore = [];
+    let urlsBefore = new Set();
+    try {
+      const pwBrowser = await ensurePlaywright();
+      pagesBefore = pwBrowser.contexts().flatMap(c => c.pages());
+      urlsBefore = new Set(pagesBefore.map(p => p.url()));
+    } catch (e) {
+      // Playwright 不可用时降级到 knownTargets
+      urlsBefore = new Set(Array.from(knownTargets.values()).map(t => t.url || ''));
+    }
 
     switch (kind) {
       case 'click': {
@@ -976,7 +1031,24 @@ app.post('/act', async (req, res) => {
       }
       case 'select': {
         if (!ref) return res.status(400).json({ error: 'ref required' });
-        await refLocator(page, ref, cachedRefs).selectOption(req.body.values || [], { timeout });
+        if (req.body.option) {
+          // 复合选择：点击下拉框 → 等待 → 按文本选中选项
+          const loc = refLocator(page, ref, cachedRefs);
+          try {
+            await loc.click({ timeout });
+          } catch {
+            // React Select 的 combobox role 在不可见的 <input> 上，
+            // 通过 evaluate 派发 mousedown 触发下拉菜单
+            await loc.evaluate(el => {
+              el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+              el.focus();
+            });
+          }
+          await page.waitForTimeout(300);
+          await page.getByText(req.body.option, { exact: true }).first().click();
+        } else {
+          await refLocator(page, ref, cachedRefs).selectOption(req.body.values || [], { timeout });
+        }
         break;
       }
       case 'scrollIntoView': {
@@ -1170,19 +1242,15 @@ app.post('/act', async (req, res) => {
         return res.status(400).json({ error: `Unknown kind: ${kind}` });
     }
 
-    // ── 操作后等待 300ms 让页面稳定 ──
-    await new Promise(r => setTimeout(r, 300));
-
-    // ── 检测新 Tab ──
-    let newTab = null;
-    for (const [tid, info] of knownTargets.entries()) {
-      if (!tabsBefore.has(tid) && (info.type === 'page' || !info.type)) {
-        newTab = { targetId: tid, url: info.url || '', title: info.title || '' };
-        break;
+    // ── 检查页面是否导航了（用 URL 变化检测，非盲等） ──
+    try {
+      const urlAfter = page.url();
+      if (urlAfter !== urlBefore) {
+        await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
       }
-    }
+    } catch {}
 
-    // ── 获取当前 Tab 的 snapshot（默认行为，静默降级） ──
+    // ── 获取当前 Tab 的 snapshot ──
     let snapshot = null, refs = null;
     try {
       const ariaText = await page.locator('body').ariaSnapshot({ ref: true });
@@ -1191,8 +1259,40 @@ app.post('/act', async (req, res) => {
       refs = built.refs;
       if (targetId) pageRefs.set(targetId, { refs, page });
     } catch (snapErr) {
-      // snapshot 失败不影响 act 结果
       console.log(`[act] snapshot 静默降级: ${snapErr.message}`);
+    }
+
+    // ── 检测新 Tab（用 Playwright page 身份对比，不依赖 URL） ──
+    let newTab = null;
+    try {
+      const pwBrowser = await ensurePlaywright();
+      let pagesAfter = pwBrowser.contexts().flatMap(c => c.pages());
+      let newPage = pagesAfter.find(p => !pagesBefore.includes(p));
+      // Playwright 创建 Page 对象是异步的，等一会再试（最长 2s）
+      if (!newPage) {
+        for (let i = 0; i < 10; i++) {
+          await new Promise(r => setTimeout(r, 200));
+          pagesAfter = pwBrowser.contexts().flatMap(c => c.pages());
+          newPage = pagesAfter.find(p => !pagesBefore.includes(p));
+          if (newPage) break;
+        }
+      }
+      if (newPage) {
+        let matchTargetId = null;
+        for (const [tid, info] of knownTargets.entries()) {
+          if (info.url === newPage.url()) { matchTargetId = tid; break; }
+        }
+        if (!matchTargetId) matchTargetId = '___new_tab___';
+        newTab = { targetId: matchTargetId, url: newPage.url(), title: await newPage.title().catch(() => '') };
+      }
+    } catch (e) {
+      // Playwright 不可用时降级到 knownTargets
+      for (const [tid, info] of knownTargets.entries()) {
+        if (!urlsBefore.has(info.url) && (info.type === 'page' || !info.type)) {
+          newTab = { targetId: tid, url: info.url || '', title: info.title || '' };
+          break;
+        }
+      }
     }
 
     // ── 如果有新 Tab，尝试获取新 Tab 的 snapshot ──
@@ -1213,9 +1313,20 @@ app.post('/act', async (req, res) => {
 
     // ── 构造统一返回 ──
     const result = { ok: true, targetId, url: page.url() };
-    if (snapshot) { result.snapshot = snapshot; result.refs = refs; result.stats = { refs: Object.keys(refs).length }; }
+    if (snapshot) {
+      if (!req.body.compact) result.snapshot = snapshot;
+      result.refs = refs;
+      result.stats = { refs: Object.keys(refs).length };
+    }
     if (newTab) { result.newTab = newTab; }
     if (newTabSnapshot) { result.newTabSnapshot = newTabSnapshot; }
+
+    // 人类可读摘要
+    const parts = [];
+    if (snapshot) parts.push(`页面快照已获取 (${Object.keys(refs).length} 个交互元素)`);
+    if (newTab) parts.push(`⚠️ 新标签页已打开: ${newTab.url || newTab.title || newTab.targetId} — 需 switch_tab 切换`);
+    if (newTabSnapshot) parts.push(`新标签页快照已预加载`);
+    result.actionSummary = parts.join('；') || '操作已完成';
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1382,7 +1493,7 @@ app.post('/pair/challenge', (req, res) => {
 
 // ── 启动服务器 ──────────────────────────────────────────
 server.listen(PORT, HOST, () => {
-  console.log(`[CloudHand] CDP Bridge v3.0 已启动: http://${HOST}:${PORT}`);
+  console.log(`[CloudHand] CDP Bridge v2.7.0 已启动: http://${HOST}:${PORT}`);
   console.log(`[CloudHand] 模式: ${LOCAL_MODE ? '本地' : '远程'}`);
   console.log(`[CloudHand] /cdp WebSocket 端点已就绪（供 Playwright 连接）`);
   console.log(`[CloudHand] 等待 Chrome 扩展连接...`);

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * CloudHand CLI v5.0 (CDP 版)
+ * CloudHand CLI v2.7.0 (CDP 版)
  * 通过 REST API 调用 CDP Bridge 控制浏览器
  */
 
@@ -147,6 +147,7 @@ async function run() {
     }
     // press 特殊处理
     if (kind === 'press') { params.key = params.ref; delete params.ref; }
+    params.compact = true;
     const res = await executePost('act', params, token);
     console.log(JSON.stringify(res, null, 2));
 

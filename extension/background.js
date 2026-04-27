@@ -1,5 +1,6 @@
 import {
   buildRelayWsUrl,
+  buildRemoteWsUrl,
   isLastRemainingTab,
   isMissingTabError,
   isRetryableReconnectError,
@@ -15,6 +16,7 @@ const BADGE = {
   error: { text: '!', color: '#B91C1C' },
 }
 
+// ── 本地连接状态 ──
 /** @type {WebSocket|null} */
 let relayWs = null
 /** @type {Promise<void>|null} */
@@ -22,6 +24,17 @@ let relayConnectPromise = null
 let relayGatewayToken = ''
 /** @type {string|null} */
 let relayConnectRequestId = null
+
+// ── 远程连接状态 ──
+/** @type {WebSocket|null} */
+let remoteWs = null
+/** @type {Promise<void>|null} */
+let remoteConnectPromise = null
+let remoteGatewayToken = ''
+/** @type {string|null} */
+let remoteConnectRequestId = null
+let remoteReconnectAttempt = 0
+let remoteReconnectTimer = null
 
 let nextSession = 1
 
@@ -41,6 +54,9 @@ const reportedTargets = new Map()
 
 /** @type {Map<number, {resolve:(v:any)=>void, reject:(e:Error)=>void}>} */
 const pending = new Map()
+// 远程连接的 pending 请求
+/** @type {Map<number, {resolve:(v:any)=>void, reject:(e:Error)=>void}>} */
+const remotePending = new Map()
 
 // Per-tab operation locks prevent double-attach races.
 /** @type {Set<number>} */
@@ -49,6 +65,27 @@ const tabOperationLocks = new Set()
 // Tabs currently in a detach/re-attach cycle after navigation.
 /** @type {Set<number>} */
 const reattachPending = new Set()
+
+// ── 互斥锁：防止本地和远程同时操作同一 Tab ──
+// sessionId → { source: 'local'|'remote', lockedAt: timestamp }
+const tabLocks = new Map()
+const LOCK_TIMEOUT_MS = 10000
+
+function acquireLock(sessionId, source) {
+  const existing = tabLocks.get(sessionId)
+  if (existing && existing.source !== source) {
+    // 检查是否超时
+    if (Date.now() - existing.lockedAt < LOCK_TIMEOUT_MS) {
+      const label = existing.source === 'local' ? '本地' : '远程'
+      throw new Error(`${label}智能体正在操作该 Tab，请稍后重试`)
+    }
+  }
+  tabLocks.set(sessionId, { source, lockedAt: Date.now() })
+}
+
+function releaseLock(sessionId) {
+  tabLocks.delete(sessionId)
+}
 
 // Reconnect state for exponential backoff.
 let reconnectAttempt = 0
@@ -179,7 +216,7 @@ async function ensureRelayConnection() {
     const port = await getRelayPort()
     const gatewayToken = await getGatewayToken()
     const httpBase = `http://127.0.0.1:${port}`
-    const wsUrl = await buildRelayWsUrl(port, gatewayToken)
+    const wsUrl = await buildRelayWsUrl('127.0.0.1', port, gatewayToken)
 
     // Fast preflight: is the relay server up?
     try {
@@ -229,6 +266,8 @@ async function ensureRelayConnection() {
   try {
     await relayConnectPromise
     reconnectAttempt = 0
+    // 更新 popup 状态
+    updateConnectionStatus()
   } finally {
     relayConnectPromise = null
   }
@@ -239,6 +278,7 @@ async function ensureRelayConnection() {
 function onRelayClosed(reason) {
   relayWs = null
   relayGatewayToken = ''
+  updateConnectionStatus()
   relayConnectRequestId = null
 
   for (const [id, p] of pending.entries()) {
@@ -370,9 +410,37 @@ async function reannounceAttachedTabs() {
 }
 
 function sendToRelay(payload) {
+  const msg = JSON.stringify(payload)
+  let sent = false
+  // 向本地连接发送
+  if (relayWs && relayWs.readyState === WebSocket.OPEN) {
+    relayWs.send(msg)
+    sent = true
+  }
+  // 向远程连接发送
+  if (remoteWs && remoteWs.readyState === WebSocket.OPEN) {
+    remoteWs.send(msg)
+    sent = true
+  }
+  if (!sent) {
+    throw new Error('Relay not connected')
+  }
+}
+
+// 仅向本地发送
+function sendToLocal(payload) {
   const ws = relayWs
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    throw new Error('Relay not connected')
+    throw new Error('Local relay not connected')
+  }
+  ws.send(JSON.stringify(payload))
+}
+
+// 仅向远程发送
+function sendToRemote(payload) {
+  const ws = remoteWs
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    throw new Error('Remote relay not connected')
   }
   ws.send(JSON.stringify(payload))
 }
@@ -486,11 +554,15 @@ async function onRelayMessage(text) {
   }
 
   if (msg && typeof msg.id === 'number' && msg.method === 'forwardCDPCommand') {
+    const sessionId = msg?.params?.sessionId
     try {
+      acquireLock(sessionId || '__global__', 'local')
       const result = await handleForwardCdpCommand(msg)
-      sendToRelay({ id: msg.id, result })
+      sendToLocal({ id: msg.id, result })
     } catch (err) {
-      sendToRelay({ id: msg.id, error: err instanceof Error ? err.message : String(err) })
+      sendToLocal({ id: msg.id, error: err instanceof Error ? err.message : String(err) })
+    } finally {
+      releaseLock(sessionId || '__global__')
     }
   }
 }
@@ -569,9 +641,9 @@ async function discoverExistingTabs() {
       }
     }
     console.log(`[CloudHand] 发现 ${discoveredList.length}/${allTabs.length} 个 tab 的 target`)
-    if (relayWs && relayWs.readyState === WebSocket.OPEN) {
-      sendToRelay({ method: 'reportTargets', targets: discoveredList })
-    }
+    // 向所有已连接的 relay 发送
+    const msg = { method: 'reportTargets', targets: discoveredList }
+    try { sendToRelay(msg) } catch { /* 没有连接时忽略 */ }
   } catch (err) {
     console.error('[CloudHand] discoverExistingTabs failed:', err)
   }
@@ -1124,7 +1196,14 @@ chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => void whenReady(
 chrome.debugger.onEvent.addListener((...args) => void whenReady(() => onDebuggerEvent(...args)))
 chrome.debugger.onDetach.addListener((...args) => void whenReady(() => onDebuggerDetach(...args)))
 
-chrome.action.onClicked.addListener(() => void whenReady(() => connectOrToggleForActiveTab()))
+// 有 popup 时 action.onClicked 不触发，通过 runtime.onMessage 接收 popup 的请求
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg?.action === 'toggleAttach') {
+    void whenReady(() => connectOrToggleForActiveTab())
+    sendResponse({ ok: true })
+  }
+  return false
+})
 
 // Refresh badge after navigation completes — service worker may have restarted
 // during navigation, losing ephemeral badge state.
@@ -1235,7 +1314,7 @@ chrome.windows.onRemoved.addListener((windowId) => {
 const initPromise = rehydrateState()
 
 initPromise.then(() => {
-  // 启动时无条件尝试连接 bridge（不要求已有 tab）
+  // 启动时无条件尝试连接本地 bridge（不要求已有 tab）
   ensureRelayConnection().then(() => {
     reconnectAttempt = 0
     if (tabs.size > 0) {
@@ -1245,6 +1324,11 @@ initPromise.then(() => {
   }).catch(() => {
     scheduleReconnect()
   })
+
+  // 启动时检查是否有已配置的远程连接
+  ensureRemoteConnection().catch(() => {
+    // 远程连接可选，失败不重试
+  })
 })
 
 // Shared gate: all state-dependent handlers await this before accessing maps.
@@ -1253,4 +1337,224 @@ async function whenReady(fn) {
   return fn()
 }
 
+// ── 远程连接管理 ──
 
+async function ensureRemoteConnection() {
+  if (remoteWs && remoteWs.readyState === WebSocket.OPEN) return
+  if (remoteConnectPromise) return await remoteConnectPromise
+
+  const stored = await chrome.storage.local.get(['remoteHost', 'remotePort', 'remoteToken'])
+  const host = (stored.remoteHost || '').trim()
+  const port = stored.remotePort || 9876
+  const token = (stored.remoteToken || '').trim()
+  if (!host || !token) return // 未配置，跳过
+
+  remoteConnectPromise = (async () => {
+    const wsUrl = buildRemoteWsUrl(host, port, token)
+
+    const ws = new WebSocket(wsUrl)
+    remoteWs = ws
+    remoteGatewayToken = token
+
+    // 绑定消息处理
+    ws.onmessage = (event) => {
+      if (ws !== remoteWs) return
+      void whenReady(() => onRemoteMessage(String(event.data || '')))
+    }
+
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('Remote WebSocket connect timeout')), 8000)
+      ws.onopen = () => { clearTimeout(t); resolve() }
+      ws.onerror = () => { clearTimeout(t); reject(new Error('Remote WebSocket connect failed')) }
+      ws.onclose = (ev) => { clearTimeout(t); reject(new Error(`Remote WebSocket closed (${ev.code})`)) }
+    })
+
+    ws.onclose = () => {
+      if (ws !== remoteWs) return
+      onRemoteClosed('closed')
+    }
+    ws.onerror = () => {
+      if (ws !== remoteWs) return
+      onRemoteClosed('error')
+    }
+  })()
+
+  try {
+    await remoteConnectPromise
+    remoteReconnectAttempt = 0
+    console.log('[CloudHand] 远程连接成功')
+    updateConnectionStatus()
+    // 远程连接成功后也上报 tab 列表
+    void discoverExistingTabs()
+  } finally {
+    remoteConnectPromise = null
+  }
+}
+
+function onRemoteClosed(reason) {
+  remoteWs = null
+  remoteGatewayToken = ''
+  remoteConnectRequestId = null
+  updateConnectionStatus()
+
+  for (const [id, p] of remotePending.entries()) {
+    remotePending.delete(id)
+    p.reject(new Error(`Remote disconnected (${reason})`))
+  }
+
+  scheduleRemoteReconnect()
+}
+
+function scheduleRemoteReconnect() {
+  if (remoteReconnectTimer) {
+    clearTimeout(remoteReconnectTimer)
+    remoteReconnectTimer = null
+  }
+  const delay = reconnectDelayMs(remoteReconnectAttempt)
+  remoteReconnectAttempt++
+  console.log(`[Remote] 重连 #${remoteReconnectAttempt} in ${Math.round(delay)}ms`)
+  remoteReconnectTimer = setTimeout(async () => {
+    remoteReconnectTimer = null
+    try {
+      await ensureRemoteConnection()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.warn(`[Remote] 重连失败: ${message}`)
+      if (isRetryableReconnectError(err)) {
+        scheduleRemoteReconnect()
+      }
+    }
+  }, delay)
+}
+
+function disconnectRemote() {
+  if (remoteReconnectTimer) {
+    clearTimeout(remoteReconnectTimer)
+    remoteReconnectTimer = null
+  }
+  remoteReconnectAttempt = 0
+  if (remoteWs) {
+    try { remoteWs.close(1000, 'user disconnect') } catch {}
+    remoteWs = null
+  }
+  remoteGatewayToken = ''
+  remoteConnectRequestId = null
+  updateConnectionStatus()
+  console.log('[CloudHand] 远程连接已断开')
+}
+
+// 远程消息处理（与本地 onRelayMessage 类似）
+async function onRemoteMessage(text) {
+  let msg
+  try { msg = JSON.parse(text) } catch { return }
+
+  // 握手挑战
+  if (msg && msg.type === 'event' && msg.event === 'connect.challenge') {
+    try {
+      ensureRemoteHandshake(msg.payload)
+    } catch (err) {
+      console.warn('[Remote] 握手失败', err instanceof Error ? err.message : String(err))
+      remoteConnectRequestId = null
+      if (remoteWs && remoteWs.readyState === WebSocket.OPEN) {
+        remoteWs.close(1008, 'gateway connect failed')
+      }
+    }
+    return
+  }
+
+  // 握手响应
+  if (msg && msg.type === 'res' && remoteConnectRequestId && msg.id === remoteConnectRequestId) {
+    remoteConnectRequestId = null
+    if (!msg.ok) {
+      console.warn('[Remote] 握手被拒绝', msg?.error || '')
+      if (remoteWs && remoteWs.readyState === WebSocket.OPEN) {
+        remoteWs.close(1008, 'gateway connect failed')
+      }
+    } else {
+      console.log('[Remote] Gateway 握手成功')
+      void discoverExistingTabs()
+    }
+    return
+  }
+
+  // ping
+  if (msg && msg.method === 'ping') {
+    try { sendToRemote({ method: 'pong' }) } catch {}
+    return
+  }
+
+  // 响应（远程 pending）
+  if (msg && typeof msg.id === 'number' && (msg.result !== undefined || msg.error !== undefined)) {
+    const p = remotePending.get(msg.id)
+    if (!p) return
+    remotePending.delete(msg.id)
+    if (msg.error) p.reject(new Error(String(msg.error)))
+    else p.resolve(msg.result)
+    return
+  }
+
+  // 远程 CDP 命令（核心：带互斥锁）
+  if (msg && typeof msg.id === 'number' && msg.method === 'forwardCDPCommand') {
+    const sessionId = msg?.params?.sessionId
+    try {
+      acquireLock(sessionId || '__global__', 'remote')
+      const result = await handleForwardCdpCommand(msg)
+      sendToRemote({ id: msg.id, result })
+    } catch (err) {
+      sendToRemote({ id: msg.id, error: err instanceof Error ? err.message : String(err) })
+    } finally {
+      releaseLock(sessionId || '__global__')
+    }
+  }
+}
+
+function ensureRemoteHandshake(payload) {
+  if (remoteConnectRequestId) return
+  const nonce = typeof payload?.nonce === 'string' ? payload.nonce.trim() : ''
+  remoteConnectRequestId = `ext-remote-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+  sendToRemote({
+    type: 'req',
+    id: remoteConnectRequestId,
+    method: 'connect',
+    params: {
+      minProtocol: 3, maxProtocol: 3,
+      client: { id: 'chrome-relay-extension', version: '1.0.0', platform: 'chrome-extension', mode: 'remote' },
+      role: 'operator',
+      scopes: ['operator.read', 'operator.write'],
+      caps: [], commands: [],
+      nonce: nonce || undefined,
+      auth: remoteGatewayToken ? { token: remoteGatewayToken } : undefined,
+    },
+  })
+}
+
+// ── 连接状态广播（供 popup 读取） ──
+function updateConnectionStatus() {
+  chrome.storage.local.set({
+    localConnected: !!(relayWs && relayWs.readyState === WebSocket.OPEN),
+    remoteConnected: !!(remoteWs && remoteWs.readyState === WebSocket.OPEN),
+  }).catch(() => {})
+}
+
+// ── 监听 storage 变化处理远程连接/断开 ──
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return
+  if (changes.remoteAction) {
+    const action = changes.remoteAction.newValue
+    if (action === 'connect') {
+      // 清除 action 标记
+      chrome.storage.local.remove('remoteAction').catch(() => {})
+      void whenReady(async () => {
+        try {
+          await ensureRemoteConnection()
+        } catch (err) {
+          console.warn('[Remote] 连接失败:', err instanceof Error ? err.message : String(err))
+          scheduleRemoteReconnect()
+        }
+      })
+    } else if (action === 'disconnect') {
+      chrome.storage.local.remove('remoteAction').catch(() => {})
+      void whenReady(() => disconnectRemote())
+    }
+  }
+})

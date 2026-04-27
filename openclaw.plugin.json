@@ -2,7 +2,7 @@
   "id": "cloudhand",
   "name": "CloudHand",
   "description": "Control your local Chrome browser. Bridges AI to your real browser via WebSocket.",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "skills": ["./openclaw-skills"],
   "configSchema": {
     "type": "object",

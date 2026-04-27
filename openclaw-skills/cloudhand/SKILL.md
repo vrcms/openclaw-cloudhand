@@ -32,7 +32,7 @@ description: |
 
 ---
 
-## 🚀 本地模式 (Local Mode) —— v2.6.0 新增
+## 🚀 本地模式 (Local Mode) —— v2.7.0 新增
 
 当 AI 智能体（如 Qwen Code、Claude Code、Codex CLI）直接运行在用户本机时，推荐使用**本地模式**。
 
@@ -752,7 +752,7 @@ navigate → sleep(3) → get_browser_state → AI 选索引 → click_element
 
 ---
 
-## 🆕 v2.5.0 新增功能
+## 🆕 v2.7.0 新增功能
 
 ### 6. `cdp_click` — CDP 真实鼠标点击（绕过反bot检测）
 
@@ -846,14 +846,14 @@ curl -s -X POST http://127.0.0.1:9876/command \
 
 ```bash
 curl -s http://127.0.0.1:9876/version
-# 返回: {"version": "2.5.0", "ok": true}
+# 返回: {"version": "2.7.0", "ok": true}
 ```
 
 扩展也会定期调用此端点检查是否有新版本可用，options 页右下角显示版本号，点击可触发版本检查。
 
 ---
 
-## 📊 v2.5.0 完整命令速查表
+## 📊 v2.7.0 完整命令速查表
 
 | 命令 | 说明 | 版本 |
 |------|------|------|
@@ -881,7 +881,7 @@ curl -s http://127.0.0.1:9876/version
 | `input_text_element` | 输入文字（旧版） | v1.0 |
 | `get_ax_tree` | Accessibility Tree | v2.4.6 |
 | `fetch_with_cookies` | 带登录态 HTTP 请求 | v2.4.6 |
-| `cdp_click` | CDP 真实鼠标点击 | v2.5.0 |
-| `cdp_type` | CDP 真实键盘输入 | v2.5.0 |
-| `network_capture` | 抓取网络请求 | v2.5.0 |
-| `console_capture` | 捕获 Console 日志 | v2.5.0 |
+| `cdp_click` | CDP 真实鼠标点击 | v2.7.0 |
+| `cdp_type` | CDP 真实键盘输入 | v2.7.0 |
+| `network_capture` | 抓取网络请求 | v2.7.0 |
+| `console_capture` | 捕获 Console 日志 | v2.7.0 |

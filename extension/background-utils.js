@@ -28,20 +28,35 @@ export async function deriveRelayToken(gatewayToken, port) {
   return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export async function buildRelayWsUrl(port, gatewayToken) {
+export async function buildRelayWsUrl(host, port, gatewayToken) {
   const token = String(gatewayToken || "").trim();
   if (!token) {
     throw new Error(
       "Missing gatewayToken in extension settings (chrome.storage.local.gatewayToken)",
     );
   }
-  // 本地模式：直接用 token 连接 /ws 路径（与 cloudhand-bridge server.js 兼容）
-  return `ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`;
+  const h = String(host || "127.0.0.1").trim();
+  const protocol = h === "127.0.0.1" || h === "localhost" ? "ws" : "wss";
+  return `${protocol}://${h}:${port}/ws?token=${encodeURIComponent(token)}`;
+}
+
+// 构建远程 WS URL（始终使用 wss，除非是本地地址）
+export function buildRemoteWsUrl(host, port, token) {
+  const h = String(host || "").trim();
+  const t = String(token || "").trim();
+  if (!h || !t) {
+    throw new Error("Missing remote host or token");
+  }
+  const protocol = h === "127.0.0.1" || h === "localhost" ? "ws" : "wss";
+  return `${protocol}://${h}:${port || 9876}/ws?token=${encodeURIComponent(t)}`;
 }
 
 export function isRetryableReconnectError(err) {
   const message = err instanceof Error ? err.message : String(err || "");
   if (message.includes("Missing gatewayToken")) {
+    return false;
+  }
+  if (message.includes("Missing remote host")) {
     return false;
   }
   return true;
@@ -62,3 +77,4 @@ export function isLastRemainingTab(allTabs, tabIdToClose) {
   }
   return allTabs.filter((tab) => tab && tab.id !== tabIdToClose).length === 0;
 }
+

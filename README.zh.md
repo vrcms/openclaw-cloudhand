@@ -2,7 +2,7 @@
 
 > 让 AI 智能体（本地/远程）极速操控你的 Chrome 浏览器。
 
-[![版本](https://img.shields.io/badge/版本-2.6.0-blue.svg)](https://github.com/vrcms/openclaw-cloudhand)
+[![版本](https://img.shields.io/badge/版本-2.7.0-blue.svg)](https://github.com/vrcms/openclaw-cloudhand)
 [![OpenClaw 插件](https://img.shields.io/badge/openclaw-plugin-orange.svg)](https://openclaw.ai)
 
 **[English](README.md)** | 中文
@@ -14,7 +14,7 @@
 1. **远程模式**：连接运行在 VPS 上的 OpenClaw AI 助理。
 2. **本地模式 (New)**：连接运行在你本机的 AI 智能体（如 Claude Code, Gemini, Qwen）。
 
-## 🌟 核心特性 (v2.6.0)
+## 🌟 核心特性 (v2.7.0)
 
 - **双路并行**：真正实现本地 AI 与远程 VPS AI 同时操控，无感切换。
 - **命令行指挥官**：自带 `ch.js` 工具，支持语义连招（如 `type {搜索框} hello`）和自动批处理。

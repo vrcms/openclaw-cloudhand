@@ -1,8 +1,11 @@
 'use strict';
 
 /**
- * CloudHand Plugin for OpenClaw
- * Registers agent tools to control local Chrome via WebSocket bridge.
+ * CloudHand Plugin for OpenClaw v2.7.0
+ * 注册 agent tools，通过 CDP Bridge 控制本地 Chrome 浏览器。
+ * 
+ * 核心交互通道：/snapshot（语义快照）+ /act（ref 交互）
+ * 降级通道：/click（CDP selector/坐标）+ /type（CDP 键盘）
  */
 
 const http = require('http');
@@ -15,17 +18,20 @@ const BRIDGE_HOST = '127.0.0.1';
 const BASE_URL = `http://${BRIDGE_HOST}:${BRIDGE_PORT}`;
 
 let bridgeProcess = null;
+let cachedToken = null;
 
+// 检查 Bridge 是否运行
 function isBridgeRunning() {
   try {
-    const res = execSync(`curl -sf ${BASE_URL}/status --max-time 2`, { timeout: 3000 });
+    execSync(`curl -sf ${BASE_URL}/status --max-time 2`, { timeout: 3000 });
     return true;
   } catch {
     return false;
   }
 }
 
-function startBridge(pluginDir) {
+// 启动 Bridge 服务
+function startBridge() {
   if (isBridgeRunning()) {
     console.log('[cloudhand] Bridge already running');
     return;
@@ -42,16 +48,33 @@ function startBridge(pluginDir) {
   console.log(`[cloudhand] Bridge started (pid=${bridgeProcess.pid})`);
 }
 
-// HTTP helper to call bridge
-function bridgeCall(method, path_, body) {
-  return new Promise((resolve, reject) => {
+// 获取 API Token（缓存，仅首次请求）
+async function getToken() {
+  if (cachedToken) return cachedToken;
+  try {
+    const r = await httpCall('GET', '/token', null, false);
+    cachedToken = r.apiToken;
+    return cachedToken;
+  } catch {
+    return null;
+  }
+}
+
+// HTTP 调用 Bridge（带可选鉴权）
+function httpCall(method, urlPath, body, auth = true) {
+  return new Promise(async (resolve, reject) => {
+    const headers = { 'Content-Type': 'application/json' };
+    if (auth) {
+      const token = await getToken();
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+    }
     const data = body ? JSON.stringify(body) : null;
     const opts = {
       hostname: BRIDGE_HOST,
       port: BRIDGE_PORT,
-      path: path_,
+      path: urlPath,
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers,
     };
     const req = http.request(opts, res => {
       let raw = '';
@@ -68,374 +91,294 @@ function bridgeCall(method, path_, body) {
 
 function formatResult(r) {
   if (!r) return 'no response';
-  if (r.result !== undefined) return typeof r.result === 'object' ? JSON.stringify(r.result) : String(r.result);
   return JSON.stringify(r);
 }
 
-// Tool definitions
+// ── Tool 定义（与 server.js v2.7.0 端点一一对应） ──────────────
+
 const TOOLS = [
+  // ── 基础 ──
   {
     name: 'cloudhand_status',
-    description: 'Check if CloudHand Chrome bridge is connected. Returns connection status and pairing info.',
+    description: '检查 CloudHand Bridge 连接状态。返回 connected（扩展是否连接）、mode（local/remote）、attachedTabs 等。',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     handler: async () => {
-      const r = await bridgeCall('GET', '/status');
-      return JSON.stringify(r);
+      const r = await httpCall('GET', '/status', null, false);
+      return formatResult(r);
+    }
+  },
+
+  // ── 标签页管理 ──
+  {
+    name: 'cloudhand_ensure_tab',
+    description: '确保有 agent 专属标签页。无则自动创建，有则复用。所有操作前应先调用此端点。',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    handler: async () => {
+      const r = await httpCall('POST', '/ensure_tab');
+      return formatResult(r);
     }
   },
   {
-    name: 'cloudhand_pair',
-    description: 'Generate a 6-digit pairing code for the user to enter in the Chrome extension. Code expires in 30 seconds.',
+    name: 'cloudhand_list_tabs',
+    description: '列出所有已知的浏览器标签页，包含 targetId、url、title、sessionId 等信息。',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     handler: async () => {
-      const r = await bridgeCall('POST', '/pair/challenge');
-      return `Pairing code: ${r.code} (expires in 30 seconds). Ask the user to click the Chrome extension icon and enter this code.`;
+      const r = await httpCall('GET', '/list_tabs');
+      return formatResult(r);
     }
   },
   {
-    name: 'cloudhand_tabs',
-    description: 'List all open tabs in the connected Chrome browser.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    handler: async () => {
-      const r = await bridgeCall('GET', '/tabs');
-      const tabs = r.tabs || [];
-      return tabs.map(t => `[${t.id}] ${t.title} - ${t.url}`).join('\n');
-    }
-  },
-  {
-    name: 'cloudhand_screenshot',
-    description: 'Take a screenshot of the current tab. Returns base64 PNG image data.',
+    name: 'cloudhand_switch_tab',
+    description: '切换 agent 到指定标签页。通过 targetId 或 sessionId 指定。',
     inputSchema: {
       type: 'object',
       properties: {
-        tabId: { type: 'number', description: 'Tab ID to screenshot (optional, defaults to active tab)' }
+        targetId: { type: 'string', description: '目标 tab 的 targetId' },
+        sessionId: { type: 'string', description: '目标 tab 的 sessionId（可选，与 targetId 二选一）' }
       },
       additionalProperties: false
     },
-    handler: async ({ tabId } = {}) => {
-      const body = tabId ? { tabId } : {};
-      const r = await bridgeCall('POST', '/screenshot', body);
-      const data = r.result || '';
-      if (!data || !data.startsWith('data:image')) return 'Screenshot failed: ' + JSON.stringify(r);
-      // Save to temp file
-      const tmpPath = `/tmp/cloudhand_screenshot_${Date.now()}.png`;
-      const base64 = data.split(',')[1];
-      fs.writeFileSync(tmpPath, Buffer.from(base64, 'base64'));
-      const sizeKB = Math.round(fs.statSync(tmpPath).size / 1024);
-      return JSON.stringify({ ok: true, path: tmpPath, sizeKB, base64: data });
+    handler: async ({ targetId, sessionId }) => {
+      const r = await httpCall('POST', '/switch_tab', { targetId, sessionId });
+      return formatResult(r);
     }
   },
   {
     name: 'cloudhand_navigate',
-    description: 'Navigate the current tab to a URL.',
+    description: '导航到指定 URL。自动使用当前 agent tab。',
     inputSchema: {
       type: 'object',
       properties: {
-        url: { type: 'string', description: 'URL to navigate to' },
-        tabId: { type: 'number', description: 'Tab ID (optional)' }
+        url: { type: 'string', description: '要导航到的 URL' }
       },
       required: ['url'],
       additionalProperties: false
     },
-    handler: async ({ url, tabId }) => {
-      const r = await bridgeCall('POST', '/navigate', { url, tabId });
-      return formatResult(r);
-    }
-  },
-  {
-    name: 'cloudhand_click',
-    description: 'Click an element on the page by CSS selector.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        selector: { type: 'string', description: 'CSS selector of element to click' },
-        tabId: { type: 'number' }
-      },
-      required: ['selector'],
-      additionalProperties: false
-    },
-    handler: async ({ selector, tabId }) => {
-      const r = await bridgeCall('POST', '/click', { selector, tabId });
-      return formatResult(r);
-    }
-  },
-  {
-    name: 'cloudhand_type',
-    description: 'Type text into the currently focused element.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        text: { type: 'string', description: 'Text to type' },
-        tabId: { type: 'number' }
-      },
-      required: ['text'],
-      additionalProperties: false
-    },
-    handler: async ({ text, tabId }) => {
-      const r = await bridgeCall('POST', '/type', { text, tabId });
-      return formatResult(r);
-    }
-  },
-  {
-    name: 'cloudhand_get_text',
-    description: 'Get all visible text content from the current page.',
-    inputSchema: {
-      type: 'object',
-      properties: { tabId: { type: 'number' } },
-      additionalProperties: false
-    },
-    handler: async ({ tabId } = {}) => {
-      const r = await bridgeCall('POST', '/get_text', { tabId });
-      const text = r.result || '';
-      return typeof text === 'string' ? text.slice(0, 8000) : JSON.stringify(r);
-    }
-  },
-  {
-    name: 'cloudhand_find',
-    description: 'Find elements on the page matching a CSS selector.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        selector: { type: 'string' },
-        limit: { type: 'number', description: 'Max results (default 20)' },
-        tabId: { type: 'number' }
-      },
-      required: ['selector'],
-      additionalProperties: false
-    },
-    handler: async ({ selector, limit = 20, tabId }) => {
-      const r = await bridgeCall('POST', '/find_elements', { selector, limit, tabId });
-      return formatResult(r);
-    }
-  },
-  {
-    name: 'cloudhand_scroll',
-    description: 'Scroll the page up or down.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        direction: { type: 'string', enum: ['up', 'down'], description: 'Scroll direction' },
-        tabId: { type: 'number' }
-      },
-      required: ['direction'],
-      additionalProperties: false
-    },
-    handler: async ({ direction, tabId }) => {
-      const action = direction === 'up' ? 'scroll_up' : 'scroll_down';
-      const r = await bridgeCall('POST', `/${action}`, { tabId });
-      return formatResult(r);
-    }
-  },
-  {
-    name: 'cloudhand_key',
-    description: 'Press a keyboard key (e.g. Enter, Escape, Tab).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        key: { type: 'string', description: 'Key name, e.g. Enter, Escape, Tab, ArrowDown' },
-        tabId: { type: 'number' }
-      },
-      required: ['key'],
-      additionalProperties: false
-    },
-    handler: async ({ key, tabId }) => {
-      const r = await bridgeCall('POST', '/key', { key, tabId });
-      return formatResult(r);
-    }
-  },
-  {
-    name: 'cloudhand_go_back',
-    description: 'Navigate back in browser history.',
-    inputSchema: { type: 'object', properties: { tabId: { type: 'number' } }, additionalProperties: false },
-    handler: async ({ tabId } = {}) => {
-      const r = await bridgeCall('POST', '/go_back', { tabId });
-      return formatResult(r);
-    }
-  },
-  {
-    name: 'cloudhand_go_forward',
-    description: 'Navigate forward in browser history.',
-    inputSchema: { type: 'object', properties: { tabId: { type: 'number' } }, additionalProperties: false },
-    handler: async ({ tabId } = {}) => {
-      const r = await bridgeCall('POST', '/go_forward', { tabId });
-      return formatResult(r);
-    }
-  },
-  {
-    name: 'cloudhand_new_window',
-    description: 'Open a new Chrome window (not a tab). Use this BEFORE any browser operation to avoid interfering with the user\'s existing tabs. Returns the new windowId and tabId.',
-    inputSchema: {
-      type: 'object',
-      properties: { url: { type: 'string', description: 'URL to open in the new window (optional, defaults to about:blank)' } },
-      additionalProperties: false
-    },
-    handler: async ({ url } = {}) => {
-      const r = await bridgeCall('POST', '/new_window', { url });
-      return JSON.stringify(r);
-    }
-  },
-  {
-    name: 'cloudhand_new_tab',
-    description: 'Open a new tab, optionally with a URL.',
-
-    inputSchema: {
-      type: 'object',
-      properties: { url: { type: 'string' } },
-      additionalProperties: false
-    },
-    handler: async ({ url } = {}) => {
-      const r = await bridgeCall('POST', '/new_tab', { url });
+    handler: async ({ url }) => {
+      const r = await httpCall('POST', '/navigate', { url });
       return formatResult(r);
     }
   },
   {
     name: 'cloudhand_page_info',
-    description: 'Get current page title and URL.',
-    inputSchema: { type: 'object', properties: { tabId: { type: 'number' } }, additionalProperties: false },
-    handler: async ({ tabId } = {}) => {
-      const r = await bridgeCall('GET', '/page_info');
-      return JSON.stringify(r);
+    description: '获取当前页面的 URL 和 Title。',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    handler: async () => {
+      const r = await httpCall('GET', '/get_page_info');
+      return formatResult(r);
+    }
+  },
+
+  // ── ⭐ 核心交互（Playwright 通道） ──
+  {
+    name: 'cloudhand_snapshot',
+    description: '⭐ 获取页面语义快照（Playwright ariaSnapshot）。返回带 [ref=eN] 编号的 ARIA 语义树，每个可交互元素都有唯一 ref，可直接用于 cloudhand_act 操作。这是理解页面内容的首选方式。',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    handler: async () => {
+      const r = await httpCall('POST', '/snapshot');
+      return formatResult(r);
     }
   },
   {
-    name: 'cloudhand_eval',
-    description: 'Execute arbitrary JavaScript in the current tab and return the result. Use this when other tools cannot find elements or when you need complex DOM operations.',
+    name: 'cloudhand_act',
+    description: '⭐ 通过 ref 编号执行页面交互操作。支持 click/type/press/hover/scroll/select/fill/wait/close 等。响应包含 actionSummary（操作摘要）、refs（刷新后的 ref 映射，无需再调 snapshot）、newTab（新标签页信息）。',
     inputSchema: {
       type: 'object',
       properties: {
-        expression: { type: 'string', description: 'JavaScript expression to evaluate in the page context' },
-        tabId: { type: 'number', description: 'Tab ID (optional)' }
+        kind: {
+          type: 'string',
+          description: '操作类型: click, type, press, hover, scroll, scrollIntoView, select, fill, wait, clickAt, typeAt, drag, evaluate, close',
+          enum: ['click', 'type', 'press', 'hover', 'scroll', 'scrollIntoView', 'select', 'fill', 'wait', 'clickAt', 'typeAt', 'drag', 'evaluate', 'close']
+        },
+        ref: { type: 'string', description: 'ref 编号（如 e12），从 snapshot 中获取' },
+        text: { type: 'string', description: '输入文本（kind=type 时必需）' },
+        key: { type: 'string', description: '按键名称（kind=press 时必需，如 Enter, Tab, Escape）' },
+        option: { type: 'string', description: '下拉选项文本（kind=select 时）' },
+        submit: { type: 'boolean', description: '输入后自动按 Enter（kind=type 时）' },
+        slowly: { type: 'boolean', description: '逐字输入模拟人类（kind=type 时）' },
+        x: { type: 'number', description: '滚动 X 像素（kind=scroll）或坐标 X（kind=clickAt/typeAt）' },
+        y: { type: 'number', description: '滚动 Y 像素（kind=scroll）或坐标 Y（kind=clickAt/typeAt）' },
+        fn: { type: 'string', description: 'JavaScript 函数体（kind=evaluate 时）' },
+        fields: {
+          type: 'array',
+          description: '批量填表字段（kind=fill 时）',
+          items: {
+            type: 'object',
+            properties: {
+              ref: { type: 'string' },
+              type: { type: 'string' },
+              value: { type: 'string' }
+            }
+          }
+        },
+        timeMs: { type: 'number', description: '固定等待毫秒数（kind=wait 时）' },
+        waitText: { type: 'string', description: '等待页面出现指定文本（kind=wait 时，对应 text 参数）' },
+        startRef: { type: 'string', description: '拖拽起点 ref（kind=drag 时）' },
+        endRef: { type: 'string', description: '拖拽终点 ref（kind=drag 时）' }
       },
-      required: ['expression'],
+      required: ['kind'],
       additionalProperties: false
     },
-    handler: async ({ expression, tabId } = {}) => {
-      const r = await bridgeCall('POST', '/eval', { expression, tabId });
-      return JSON.stringify(r);
+    handler: async (params) => {
+      // 构建请求体，映射参数名
+      const body = { kind: params.kind };
+      if (params.ref) body.ref = params.ref;
+      if (params.text) body.text = params.text;
+      if (params.key) body.key = params.key;
+      if (params.option) body.option = params.option;
+      if (params.submit) body.submit = params.submit;
+      if (params.slowly) body.slowly = params.slowly;
+      if (params.x !== undefined) body.x = params.x;
+      if (params.y !== undefined) body.y = params.y;
+      if (params.fn) body.fn = params.fn;
+      if (params.fields) body.fields = params.fields;
+      if (params.timeMs) body.timeMs = params.timeMs;
+      if (params.waitText) body.text = params.waitText;
+      if (params.startRef) body.startRef = params.startRef;
+      if (params.endRef) body.endRef = params.endRef;
+      const r = await httpCall('POST', '/act', body);
+      return formatResult(r);
+    }
+  },
+
+  // ── 截图 ──
+  {
+    name: 'cloudhand_screenshot',
+    description: '截取当前页面截图，返回 base64 PNG。仅在用户明确要求截图时使用。',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    handler: async () => {
+      const r = await httpCall('POST', '/screenshot');
+      if (r.ok && r.data) {
+        const tmpPath = `/tmp/cloudhand_screenshot_${Date.now()}.png`;
+        const base64 = r.data.split(',')[1];
+        fs.writeFileSync(tmpPath, Buffer.from(base64, 'base64'));
+        const sizeKB = Math.round(fs.statSync(tmpPath).size / 1024);
+        return JSON.stringify({ ok: true, path: tmpPath, sizeKB, base64: r.data });
+      }
+      return formatResult(r);
     }
   },
   {
-    name: 'cloudhand_ax_tree',
-    description: 'Get the Accessibility Tree of the current page. Returns a compact text snapshot with stable [ref=N] identifiers for interactive elements (buttons, links, inputs, etc). Use this instead of get_browser_state for faster AI page understanding. Then use cloudhand_click_ref or cloudhand_type_ref to interact with elements by ref number.',
+    name: 'cloudhand_screenshot_labels',
+    description: '截取带标签的截图，交互元素自动标注边框和编号。同时返回语义快照和 ref 映射。',
     inputSchema: {
       type: 'object',
       properties: {
-        tabId: { type: 'number', description: 'Tab ID (optional)' },
-        interactive: { type: 'boolean', description: 'Only return interactive elements (default: false)' },
-        compact: { type: 'boolean', description: 'Remove empty structural nodes (default: true)' },
-        maxDepth: { type: 'number', description: 'Max tree depth (optional)' }
+        filterMode: { type: 'string', description: '过滤模式: clickable（仅可点击）, all（全部）', enum: ['clickable', 'all'] },
+        maxLabels: { type: 'number', description: '最大标签数量（默认 100）' }
       },
       additionalProperties: false
     },
-    handler: async ({ tabId, interactive, compact, maxDepth } = {}) => {
-      const r = await bridgeCall('POST', '/get_ax_tree', { tabId, interactive, compact: compact !== false, maxDepth });
-      return JSON.stringify(r);
+    handler: async ({ filterMode, maxLabels } = {}) => {
+      const body = {};
+      if (filterMode) body.filterMode = filterMode;
+      if (maxLabels) body.maxLabels = maxLabels;
+      const r = await httpCall('POST', '/screenshot_with_labels', body);
+      return formatResult(r);
     }
   },
+
+  // ── 降级操作（纯 CDP） ──
   {
-    name: 'cloudhand_fetch',
-    description: 'Fetch a URL using the current browser tab login session (cookies included). Much faster than DOM manipulation for reading data from sites you are already logged into. Returns { status, ok, data }.',
+    name: 'cloudhand_click',
+    description: '通过 CSS 选择器或坐标点击元素（纯 CDP）。优先使用 cloudhand_act click。',
     inputSchema: {
       type: 'object',
       properties: {
-        url: { type: 'string', description: 'URL to fetch' },
-        method: { type: 'string', description: 'HTTP method (default: GET)', enum: ['GET','POST','PUT','DELETE','PATCH'] },
-        headers: { type: 'object', description: 'Additional headers (optional)' },
-        body: { type: 'object', description: 'Request body for POST/PUT (optional)' },
-        tabId: { type: 'number', description: 'Tab ID to use login session from (optional)' }
+        selector: { type: 'string', description: 'CSS 选择器' },
+        x: { type: 'number', description: 'X 坐标（与 selector 二选一）' },
+        y: { type: 'number', description: 'Y 坐标（与 selector 二选一）' }
       },
-      required: ['url'],
       additionalProperties: false
     },
-    handler: async ({ url, method, headers, body, tabId } = {}) => {
-      const r = await bridgeCall('POST', '/fetch_with_cookies', { url, method, headers, body, tabId });
-      return JSON.stringify(r);
+    handler: async ({ selector, x, y }) => {
+      const body = {};
+      if (selector) body.selector = selector;
+      if (x !== undefined) body.x = x;
+      if (y !== undefined) body.y = y;
+      const r = await httpCall('POST', '/click', body);
+      return formatResult(r);
     }
   },
   {
-    name: 'cloudhand_cdp_click',
-    description: 'Click an element using real CDP mouse events (Input.dispatchMouseEvent). More reliable than JS click, bypasses anti-bot detection. Provide selector (CSS) to click a specific element.',
+    name: 'cloudhand_type',
+    description: 'CDP 键盘输入。可选先通过 selector 聚焦元素。优先使用 cloudhand_act type。',
     inputSchema: {
       type: 'object',
       properties: {
-        selector: { type: 'string', description: 'CSS selector of element to click' },
-        tabId: { type: 'number', description: 'Tab ID (optional)' }
-      },
-      required: ['selector'],
-      additionalProperties: false
-    },
-    handler: async ({ selector, tabId } = {}) => {
-      const r = await bridgeCall('POST', '/cdp_click', { selector, tabId });
-      return JSON.stringify(r);
-    }
-  },
-  {
-    name: 'cloudhand_cdp_type',
-    description: 'Type text using real CDP keyboard events (Input.dispatchKeyEvent), simulating human keystroke timing. Use this instead of cloudhand_type when sites have anti-bot protection.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        text: { type: 'string', description: 'Text to type' },
-        selector: { type: 'string', description: 'CSS selector to focus before typing (optional)' },
-        tabId: { type: 'number', description: 'Tab ID (optional)' }
+        text: { type: 'string', description: '要输入的文本' },
+        selector: { type: 'string', description: '先聚焦此 CSS 选择器（可选）' }
       },
       required: ['text'],
       additionalProperties: false
     },
-    handler: async ({ text, selector, tabId } = {}) => {
-      const r = await bridgeCall('POST', '/cdp_type', { text, selector, tabId });
-      return JSON.stringify(r);
+    handler: async ({ text, selector }) => {
+      const body = { text };
+      if (selector) body.selector = selector;
+      const r = await httpCall('POST', '/type', body);
+      return formatResult(r);
     }
   },
   {
-    name: 'cloudhand_network_capture',
-    description: 'Capture network requests (XHR/fetch) from the current tab for a specified duration. Useful for reverse-engineering APIs. Returns up to 50 non-static requests.',
+    name: 'cloudhand_eval',
+    description: '在当前页面执行 JavaScript 表达式并返回结果。兜底手段，优先使用 snapshot + act。',
     inputSchema: {
       type: 'object',
       properties: {
-        waitMs: { type: 'number', description: 'How long to capture in milliseconds (default: 3000)' },
-        tabId: { type: 'number', description: 'Tab ID (optional)' }
+        expression: { type: 'string', description: 'JavaScript 表达式' }
       },
+      required: ['expression'],
       additionalProperties: false
     },
-    handler: async ({ waitMs, tabId } = {}) => {
-      const r = await bridgeCall('POST', '/network_capture', { waitMs, tabId });
-      return JSON.stringify(r);
+    handler: async ({ expression }) => {
+      const r = await httpCall('POST', '/eval', { expression });
+      return formatResult(r);
     }
   },
   {
-    name: 'cloudhand_console',
-    description: 'Capture browser console logs and JavaScript errors from the current tab for a specified duration. Useful for debugging page issues.',
+    name: 'cloudhand_cdp',
+    description: '万能 CDP 命令透传。直接发送任意 Chrome DevTools Protocol 命令。',
     inputSchema: {
       type: 'object',
       properties: {
-        waitMs: { type: 'number', description: 'How long to capture in milliseconds (default: 2000)' },
-        tabId: { type: 'number', description: 'Tab ID (optional)' }
+        method: { type: 'string', description: 'CDP 方法名（如 DOM.getDocument, Page.captureScreenshot）' },
+        params: { type: 'object', description: 'CDP 参数对象' }
       },
+      required: ['method'],
       additionalProperties: false
     },
-    handler: async ({ waitMs, tabId } = {}) => {
-      const r = await bridgeCall('POST', '/console_capture', { waitMs, tabId });
-      return JSON.stringify(r);
+    handler: async ({ method, params }) => {
+      const r = await httpCall('POST', '/cdp', { method, params: params || {} });
+      return formatResult(r);
+    }
+  },
+  {
+    name: 'cloudhand_ax_tree',
+    description: '获取页面无障碍树（Accessibility Tree）。返回原始 AX 节点数组。',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    handler: async () => {
+      const r = await httpCall('POST', '/get_ax_tree');
+      return formatResult(r);
     }
   }
 ];
-// OpenClaw plugin register function
+
+// ── OpenClaw 插件注册 ──────────────────────────────────
+
 function register(api) {
-  const pluginDir = __dirname;
   const config = api.config || {};
   const autoStart = config.autoStart !== false;
 
-  // Start bridge server
+  // 启动 Bridge 服务
   if (autoStart) {
     try {
-      startBridge(pluginDir);
+      startBridge();
     } catch (e) {
       console.error('[cloudhand] Failed to start bridge:', e.message);
     }
   }
 
-  // 自动生成带正确 VPS IP 的 extension.zip
+  // 自动生成带 VPS IP 的 extension.zip
   try {
     const bridgeConfigPath = path.join(require('os').homedir(), '.openclaw', 'chrome-bridge', 'config.json');
     let publicIp = process.env.PUBLIC_IP || null;
@@ -444,32 +387,31 @@ function register(api) {
       publicIp = bridgeCfg.publicIp || null;
     }
     if (publicIp) {
-      const extDir = path.join(pluginDir, 'extension');
-      const zipPath = path.join(pluginDir, 'extension.zip');
-      const bgPath = path.join(extDir, 'background.js');
-      // 写入临时目录打包（每次清空，避免旧文件残留）
+      const extDir = path.join(__dirname, '..', 'extension');
+      const zipPath = path.join(__dirname, 'extension.zip');
       const tmpDir = path.join(require('os').tmpdir(), 'cloudhand-ext-build');
       if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
       fs.mkdirSync(tmpDir, { recursive: true });
-      // 复制所有扩展文件到临时目录
+      // 复制扩展文件
       for (const f of fs.readdirSync(extDir)) {
-        fs.copyFileSync(path.join(extDir, f), path.join(tmpDir, f));
+        const src = path.join(extDir, f);
+        if (fs.statSync(src).isFile()) {
+          fs.copyFileSync(src, path.join(tmpDir, f));
+        }
       }
-      // 生成 config.js（运行时配置，含真实 IP）写入 tmpDir，不写入 extDir
+      // 生成 config.js（运行时配置，含真实 IP）
       const bridgePort = config.port || BRIDGE_PORT;
-      const configJs = `// Auto-generated by CloudHand skill on ${new Date().toISOString()}\n// Do not edit manually. Re-generated on each plugin startup.\nexport const CLOUDHAND_CONFIG = {\n  wsUrl: 'ws://${publicIp}:${bridgePort}/ws',\n  port: ${bridgePort}\n};\n`;
+      const configJs = `// Auto-generated by CloudHand plugin on ${new Date().toISOString()}\nexport const CLOUDHAND_CONFIG = {\n  wsUrl: 'ws://${publicIp}:${bridgePort}/ws',\n  port: ${bridgePort}\n};\n`;
       fs.writeFileSync(path.join(tmpDir, 'config.js'), configJs);
-      // background.js 直接复制（用 import config.js，不需要 patch）
-      fs.copyFileSync(bgPath, path.join(tmpDir, 'background.js'));
       // 打包 zip
       execSync(`cd '${tmpDir}' && zip -r '${zipPath}' .`, { stdio: 'ignore' });
-      console.log(`[cloudhand] Extension zip + config.js built with IP: ${publicIp}`);
+      console.log(`[cloudhand] Extension zip built with IP: ${publicIp}`);
     }
   } catch (e) {
     console.error('[cloudhand] Failed to build extension zip:', e.message);
   }
 
-  // Register tools
+  // 注册 tools
   for (const tool of TOOLS) {
     api.registerTool({
       name: tool.name,
@@ -477,7 +419,7 @@ function register(api) {
       parameters: tool.inputSchema,
       async execute(_toolCallId, params) {
         try {
-          const result = await tool.handler(params);
+          const result = await tool.handler(params || {});
           const text = typeof result === 'string' ? result : JSON.stringify(result);
           return { content: [{ type: 'text', text }] };
         } catch (e) {
@@ -487,9 +429,7 @@ function register(api) {
     });
   }
 
-  // 下载端点已移至 server.js（9876端口），api.route 在 openclaw 插件 API 中不可用
-
-  // Cleanup on shutdown
+  // 关闭时清理
   if (api.onShutdown) {
     api.onShutdown(() => {
       if (bridgeProcess) {
@@ -499,7 +439,7 @@ function register(api) {
     });
   }
 
-  console.log('[cloudhand] CloudHand plugin loaded');
+  console.log('[cloudhand] CloudHand plugin v2.7.0 loaded');
 }
 
 module.exports = { register };

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CloudHand - OpenClaw Plugin Installer
+# CloudHand v2.7.0 - OpenClaw Plugin Installer
 # CloudHand 云手 - OpenClaw 插件一键安装脚本
 # Usage / 用法: bash install.sh
 
@@ -16,7 +16,7 @@ warn()  { echo "  ⚠️  $1 | $2"; }
 
 echo ''
 echo '================================================'
-echo '   CloudHand Chrome Bridge - Installer'
+echo '   CloudHand v2.7.0 - Installer'
 echo '   CloudHand 云手 - 安装程序'
 echo '================================================'
 echo ''
@@ -42,11 +42,6 @@ if ! command -v npm &>/dev/null; then
 fi
 ok "npm" "$(npm -v)"
 
-if ! command -v python3 &>/dev/null; then
-  err "python3 not found." "未检测到 python3"
-fi
-ok "python3" "$(python3 --version)"
-
 # ── 检查插件目录 / Check plugin directory ────────────
 echo ''
 if [ ! -f "$CLOUDHAND_DIR/cloudhand-bridge/index.js" ]; then
@@ -58,69 +53,91 @@ ok "Plugin directory found" "插件目录存在: $CLOUDHAND_DIR"
 # ── 安装依赖 / Install npm dependencies ──────────────
 echo ''
 info "Installing npm dependencies..." "安装 npm 依赖..."
-cd "$CLOUDHAND_DIR"
-if [ ! -d node_modules ]; then
-  npm install --quiet 2>/dev/null
+
+# 依赖声明在 cloudhand-bridge/package.json 中
+if [ -f "$CLOUDHAND_DIR/cloudhand-bridge/package.json" ]; then
+  cd "$CLOUDHAND_DIR/cloudhand-bridge"
+  if [ ! -d node_modules ]; then
+    npm install --quiet 2>/dev/null
+  fi
+  ok "Bridge dependencies ready" "Bridge 依赖安装完成"
 fi
-ok "Dependencies ready" "依赖安装完成"
+
+# 根目录也有 package.json（express + ws）
+if [ -f "$CLOUDHAND_DIR/package.json" ]; then
+  cd "$CLOUDHAND_DIR"
+  if [ ! -d node_modules ]; then
+    npm install --quiet 2>/dev/null
+  fi
+  ok "Root dependencies ready" "根目录依赖安装完成"
+fi
 
 # ── 打包 Chrome 扩展 / Package Chrome extension ──────
 echo ''
 info "Packaging Chrome extension..." "打包 Chrome 扩展..."
 cd "$CLOUDHAND_DIR"
-python3 << 'PYEOF'
-import zipfile, os
-with zipfile.ZipFile('extension.zip', 'w', zipfile.ZIP_DEFLATED) as z:
-    for root, dirs, files in os.walk('extension'):
-        for f in files:
-            fp = os.path.join(root, f)
-            z.write(fp)
-print('  ✅ extension.zip | 扩展打包完成')
-PYEOF
+
+if command -v zip &>/dev/null && [ -d "extension" ]; then
+  cd extension && zip -r ../cloudhand-bridge/extension.zip . -q && cd ..
+  ok "extension.zip created" "扩展打包完成"
+elif command -v node &>/dev/null && [ -d "extension" ]; then
+  # 用 Node.js 打包（无 zip 命令时的降级方案）
+  node -e "
+    const fs = require('fs');
+    const path = require('path');
+    const { execSync } = require('child_process');
+    const extDir = path.join('extension');
+    const files = fs.readdirSync(extDir);
+    // tar 打包后让用户手动解压
+    console.log('  ⚠️  zip not available, skipping | zip 命令不可用，跳过打包');
+  "
+else
+  warn "Cannot package extension (no zip command)" "无法打包扩展（缺少 zip 命令）"
+fi
 
 # ── 更新 OpenClaw 配置 / Update OpenClaw config ──────
 echo ''
 info "Configuring OpenClaw..." "配置 OpenClaw..."
 
-python3 << PYEOF
-import json, os, shutil
+node -e "
+  const fs = require('fs');
+  const path = require('path');
 
-config_path = os.path.expanduser('~/.openclaw/openclaw.json')
-cloudhand_path = os.path.expanduser('~/.openclaw/extensions/cloudhand')
+  const configPath = path.join(process.env.HOME, '.openclaw', 'openclaw.json');
+  const cloudhandPath = path.join(process.env.HOME, '.openclaw', 'extensions', 'cloudhand');
 
-with open(config_path, 'r') as f:
-    d = json.load(f)
+  let d;
+  try { d = JSON.parse(fs.readFileSync(configPath, 'utf8')); }
+  catch { console.log('  ⚠️  openclaw.json not found, skipping | 配置文件不存在，跳过'); process.exit(0); }
 
-changed = False
+  let changed = false;
 
-d.setdefault('plugins', {}).setdefault('allow', [])
-if 'cloudhand' not in d['plugins']['allow']:
-    d['plugins']['allow'].append('cloudhand')
-    changed = True
+  if (!d.plugins) d.plugins = {};
+  if (!d.plugins.allow) d.plugins.allow = [];
+  if (!d.plugins.allow.includes('cloudhand')) { d.plugins.allow.push('cloudhand'); changed = true; }
 
-d['plugins'].setdefault('load', {}).setdefault('paths', [])
-if cloudhand_path not in d['plugins']['load']['paths']:
-    d['plugins']['load']['paths'].append(cloudhand_path)
-    changed = True
+  if (!d.plugins.load) d.plugins.load = {};
+  if (!d.plugins.load.paths) d.plugins.load.paths = [];
+  if (!d.plugins.load.paths.includes(cloudhandPath)) { d.plugins.load.paths.push(cloudhandPath); changed = true; }
 
-d['plugins'].setdefault('entries', {}).setdefault('cloudhand', {})
-if not d['plugins']['entries']['cloudhand'].get('enabled'):
-    d['plugins']['entries']['cloudhand'] = {'enabled': True, 'config': {'port': 9876, 'autoStart': True}}
-    changed = True
+  if (!d.plugins.entries) d.plugins.entries = {};
+  if (!d.plugins.entries.cloudhand || !d.plugins.entries.cloudhand.enabled) {
+    d.plugins.entries.cloudhand = { enabled: true, config: { port: 9876, autoStart: true } };
+    changed = true;
+  }
 
-d.setdefault('tools', {}).setdefault('allow', [])
-if 'cloudhand' not in d['tools']['allow']:
-    d['tools']['allow'].append('cloudhand')
-    changed = True
+  if (!d.tools) d.tools = {};
+  if (!d.tools.allow) d.tools.allow = [];
+  if (!d.tools.allow.includes('cloudhand')) { d.tools.allow.push('cloudhand'); changed = true; }
 
-if changed:
-    shutil.copy(config_path, config_path + '.bak')
-    with open(config_path, 'w') as f:
-        json.dump(d, f, indent=2, ensure_ascii=False)
-    print('  ✅ Config updated | 配置文件已更新')
-else:
-    print('  ✅ Config unchanged | 配置文件无需更改')
-PYEOF
+  if (changed) {
+    fs.copyFileSync(configPath, configPath + '.bak');
+    fs.writeFileSync(configPath, JSON.stringify(d, null, 2));
+    console.log('  ✅ Config updated | 配置文件已更新');
+  } else {
+    console.log('  ✅ Config unchanged | 配置文件无需更改');
+  }
+"
 
 # ── 重启 Gateway / Restart Gateway ───────────────────
 echo ''
@@ -141,17 +158,18 @@ echo '================================================'
 echo ''
 echo '  📌 Next steps | 下一步'
 echo ''
-echo '  1. Get the Chrome extension ZIP | 获取 Chrome 扩展'
-echo "     $CLOUDHAND_DIR/extension.zip"
+echo '  1. Download Chrome extension | 下载 Chrome 扩展'
+echo '     Ask your AI: "generate extension download link"'
+echo '     对 AI 说「生成扩展下载链接」'
 echo ''
-echo '  2. Load in Chrome | 在 Chrome 中加载'
+echo '  2. Install in Chrome | 在 Chrome 中安装'
 echo '     chrome://extensions/ → Developer mode | 开发者模式'
 echo '     → "Load unpacked" | 「加载已解压的扩展程序」'
-echo '     → Select the extension/ folder | 选择 extension/ 目录'
+echo '     → Select the unzipped folder | 选择解压后的目录'
 echo ''
-echo '  3. Connect | 连接配对'
-echo '     Click the extension icon → Enter VPS address | 点击扩展图标 → 填入 VPS 地址'
+echo '  3. Pair | 配对连接'
 echo '     Tell your AI: "pair browser" | 对 AI 说「帮我连接浏览器」'
+echo '     Enter the 6-digit code in the extension | 在扩展中输入 6 位配对码'
 echo ''
 echo '  4. Test | 测试'
 echo '     Tell your AI: "test cloudhand" | 对 AI 说「测试云手」'

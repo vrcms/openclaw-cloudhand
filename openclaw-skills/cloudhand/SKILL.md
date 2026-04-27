@@ -7,881 +7,400 @@ description: |
   NOT for: 服务端抓取（用 web/firecrawl），不需要真实浏览器的场景。
 ---
 
-# CloudHand - 控制本地 Chrome
+# CloudHand v2.7.0 — 控制本地 Chrome
+
+通过 CDP 协议 + Playwright 操控用户本地 Chrome 浏览器。Bridge 运行在 `http://127.0.0.1:9876`，所有操作通过 HTTP REST 调用。
+
+---
 
 ## ⚠️ 重要前提：用户电脑必须在线
 
-**CloudHand 不是 VPS 服务，必须用户本地电脑运行 Chrome 扩展才能工作：**
-
 | 要求 | 说明 |
 |------|------|
-| ✅ **用户电脑开机** | 你的 Windows/Mac 必须开着 |
-| ✅ **Chrome 运行** | Chrome 浏览器必须启动（可以后台运行） |
+| ✅ **用户电脑开机** | Windows/Mac 必须开着 |
+| ✅ **Chrome 运行** | Chrome 浏览器必须启动（可后台运行） |
 | ✅ **扩展已安装** | CloudHand Chrome 扩展已安装并启用 |
-| ✅ **扩展已配对** | 扩展与 VPS bridge 完成配对（一次配对，长期有效） |
+| ✅ **Bridge 已启动** | `node cloudhand-bridge/server.js` 正在运行 |
 
 **如果用户电脑关机/扩展未运行：**
-- 云手无法执行任何浏览器操作
-- 所有端点返回 `extensionConnected: false`
+- 所有端点返回 `connected: false`
 - 必须告知用户「需要打开电脑并启动 Chrome」
 
 **定时任务注意事项：**
 - 定时任务（cron）通常**不使用云手**，因为用户电脑可能关机
 - 定时任务应该用 `curl`/`requests` 直接抓取（服务端方式）
-| ✅ **扩展已配对** | 扩展与 VPS bridge 完成配对（一次配对，长期有效） |
 
 ---
 
-## 🚀 本地模式 (Local Mode) —— v2.7.0 新增
+## 双模式运行
 
-当 AI 智能体（如 Qwen Code、Claude Code、Codex CLI）直接运行在用户本机时，推荐使用**本地模式**。
-
-**本地模式优势：**
-- **极低延迟**：指令直达本机 Chrome，不经过公网 VPS 中转。
-- **自动连接**：Chrome 扩展自动探测本机 9876 端口，发现 bridge 即刻连接，无需手动配置。
-- **免配对**：本机环境被视为受信任环境，跳过 6 位配对码流程，实现开箱即用。
-- **隐私安全**：所有数据流转仅限本机 `127.0.0.1`，不经过任何外部服务器。
-
-**如何开启：**
-1. **启动 Bridge**：双击运行项目根目录的 `start-local.bat` (Windows) 或执行 `bash start-local.sh` (Mac/Linux)。
-2. **扩展感应**：Chrome 扩展会自动显示「已连接本地模式」，Badge 变为蓝色。
-
----
-
-## ⚡ 第一步：检查连接状态（每次使用前必做）
-
-**在执行任何浏览器操作之前**，必须先检查 bridge 是否已连接，以及当前处于什么模式：
-
-```python
-import requests
-status = requests.get('http://127.0.0.1:9876/status').json()
-paired = status.get('paired', False)
-connected = status.get('extensionConnected', False)
-mode = status.get('mode', 'remote') # 'local' 或 'remote'
-```
-
-### 连接状态说明
-
-| 字段 | 状态 | 含义 | 处理方式 |
-|------|------|----------|----------|
-| `mode` | `local` | **本地模式**：AI 与 Chrome 都在本机 | ✅ 最佳状态，直接执行任务 |
-| `mode` | `remote` | **远程模式**：通过 VPS 中转控制 | ✅ 正常，需确保 `paired: true` |
-| `extensionConnected` | `false` | 扩展未运行或未连接 | 提示用户启动 Chrome 或检查 bridge |
-| `paired` | `false` | 远程模式下未配对 | 生成配对码，指引用户配对 |
-
-**探测逻辑建议：**
-
-```python
-if mode == 'local' and connected:
-    print("🚀 已进入本地直连模式，操作响应将非常迅速。")
-elif mode == 'remote' and connected and paired:
-    print("🌐 已连接远程 VPS Bridge。")
-elif not connected:
-    print("⚠️ 尚未连接你的 Chrome 浏览器。")
-    # ... 引导逻辑 ...
-```
-
----
-
-**未连接时必须告知用户，不要静默失败：**
-
-```python
-if not connected:
-    # 直接告诉用户
-    print("⚠️ 尚未连接你的 Chrome 浏览器，还无法操作网页。")
-    print("请先安装 CloudHand 扩展并配对：")
-    print("1. 让我生成下载链接安装扩展")
-    print("2. 输入配对码完成配对")
-elif not paired:
-    print("⚠️ 扩展已连接但未配对，请生成配对码完成配对。")
-    # 自动生成配对码
-    pair_r = requests.post('http://127.0.0.1:9876/pair/challenge').json()
-    print(f"配对码：{pair_r.get('code')}（120秒有效）")
-```
-
----
-
-## 安装后步骤
-
-安装完成并验证 bridge 正常运行后：
-
-1. **生成一次性下载链接**（120秒有效），发给用户下载 Chrome 扩展：
-   ```bash
-   APITOKEN=$(curl -s http://127.0.0.1:9876/token | python3 -c "import sys,json; print(json.load(sys.stdin)['apiToken'])")
-   curl -s -X POST -H "Authorization: Bearer $APITOKEN" http://127.0.0.1:9876/gen-download-link
-   # 返回: {"url":"http://<ip>:9876/download-ext?t=xxx", "expiresIn":120}
-   ```
-   把返回的 url 发给用户，用户在 120 秒内下载，zip 下载后自动删除。
-
-2. **通过当前对话渠道发送欢迎消息**，例如：
-   > ☁️ CloudHand 云手已安装！Chrome 扩展下载链接（120秒有效）：<url>
-   > 安装方式：Chrome 扩展管理页 → 开发者模式 → 加载解压缩扩展 → 选择解压后的文件夹
-
-不要硬编码渠道或用户 ID，用当前会话的回复机制即可。
-
----
-
-## 🧹 Tab 清理规则（必须遵守）
-
-- **每次任务完成后，关闭所有我打开的非活跃 tab**，只保留最后一个
-- **只关 agent 窗口（`/agent_windows` 返回的 windowId）下的 tab**，用户其他窗口绝对不动
-- 关闭方法：`POST /close_tab {tabId: id}`
-- 判断标准：`active: false` 且在 agent 窗口下 → 关闭
-
-```python
-# 任务结束时标准清理流程
-agent_tabs = [t for t in all_tabs if t['windowId'] == AGENT_WIN]
-to_close = [t['id'] for t in agent_tabs if not t['active']]
-if len(to_close) >= len(agent_tabs):
-    to_close = to_close[1:]  # 至少保留1个
-for tab_id in to_close:
-    requests.post('/close_tab', json={'tabId': tab_id})
-```
-
----
-
-## 🧠 站点经验库（执行网页任务必读）
-
-### 任务前：读取经验
-**每次执行网页任务前**，先检查是否有该站点的经验文件：
-
-```bash
-cat /root/.openclaw/workspace/browser-knowledge/<domain>.md 2>/dev/null || echo "无经验文件"
-# 也看通用经验
-cat /root/.openclaw/workspace/browser-knowledge/_common.md
-```
-
-经验文件目录：`/root/.openclaw/workspace/browser-knowledge/`
-- **一个域名 = 一个文件**，文件名就是域名，如 `douyin.com.md`、`toutiao.com.md`、`bing.com.md`
-- **严禁混合**：不同域名的经验绝对不能写在同一个文件里（例如：Bing 的经验不能写进 toutiao.com.md）
-- `_common.md`：通用技巧，适用于所有网站（SPA 等待、懒加载、data-e2e 选择器优先级等）
-- 写经验前先确认：「这条经验属于哪个域名？」然后写到对应文件
-
-### 🆕 第一次访问新域名：必须建立完整经验文件
-
-**判断条件**：`browser-knowledge/<domain>.md` 不存在，即为首次访问。
-
-首次访问时，用 `get_browser_state` 读取 UI 树，观察元素列表，总结写入经验文件：
-
-```python
-# 1. navigate 后等页面加载
-time.sleep(3)
-
-# 2. 读取 UI 树，观察所有可交互元素
-state = requests.post('http://127.0.0.1:9876/get_browser_state', headers=H, json={'tabId': tid}).json()
-print('elementCount:', state['result']['elementCount'])
-print(state['result']['content'])  # AI 观察并总结
-```
-
-**观察重点（从 UI 树中提取）：**
-- **搜索框**：找 `<input placeholder="...">` 类元素，记录 placeholder 文字和索引规律
-- **主要按钮**：登录/注册/筛选/排序按钮的文字
-- **内容区元素**：内容型元素（`<a>`链接、文章标题）从第几个索引开始
-- **元素总数**：正常加载后大约多少个元素（elementCount 为 0 说明需要更长等待时间）
-
-**必须记录的四类信息：**
-
-```markdown
-# <domain> 经验
-
-## **加载节奏**
-- navigate 后需等 N 秒，get_browser_state 才返回有效元素（elementCount > 0）
-- 是否需要滚动才能加载更多内容
-
-## **关键功能入口**（UI树中的元素特征）
-- 搜索框：placeholder="XXX"，通常在索引 [N] 附近
-- 登录/主操作按钮：文字为「XXX」
-- 内容列表：从索引 [N] 开始是文章/视频链接
-
-## **click_element 注意事项**
-- 哪些元素直接点击有效
-- 哪些需要 eval 完整鼠标事件链（如 React Select 下拉）
-- 哪些操作是二步骤（先展开再点子项，展开后需重新调 get_browser_state）
-
-## **其他注意事项**
-- 是否需要登录
-- 是否懒加载（需滚动后再读 UI 树）
-- 有无反爬/验证码
-```
-
----
-
-### ⚠️⚠️⚠️ 任务后：写入经验【强制，不可跳过】
-**==每次云手任务完成，必须先写经验，再发汇报。不写经验 = 任务未完成。==**
-
-哪怕只有一句话，也必须写：
-
-```bash
-# 追加经验到站点文件（没有就创建）
-cat >> /root/.openclaw/workspace/browser-knowledge/<domain>.md << 'EOF'
-## 更新 YYYY-MM-DD
-- 有效选择器：xxx
-- 需要等待：sleep(N秒)
-- 踩坑：xxx
-EOF
-```
-
-**必须记录的内容：**
-- 有效的 CSS 选择器 / data-e2e 属性（这是最宝贵的）
-- 需要等待的时间（sleep 多少秒才能看到内容）
-- 懒加载触发方式（滚动几次、滚多少像素）
-- 踩过的坑（错误选择器、跳转页、编码问题等）
-- 登录要求（是否需要 Cookie、如何判断已登录）
-
-**目的**：下次执行同类任务直接用已知经验，不重复调试，节省大量时间。
-
-> **⛔ 禁止行为**：执行完任务直接发汇报，跳过写经验步骤。这是失职，不可接受。
-
-### 通用规则（优先于特定站点经验）
-- `data-e2e` 属性 > class 名（class 是哈希，随构建变化；data-e2e 是语义稳定属性）
-- SPA 页面（React/Vue）：navigate 后必须 `sleep(3~5)` 等渲染
-- 评论/内容懒加载：先滚动页面 2~3 次再提取
-- 用 `/eval` 注入 JS 比截图快 90%，比解析 HTML 省 80%
-- shell 变量为空时不要拼接 JSON（会生成 `{"key":}` 非法 JSON）→ 改用 Python requests
-
----
-
-## 🚨 行为规范（必读，违反=出 bug）
-
-1. **查「用户在看什么」→ 用 `/tabs`，绝不用截图**
-   ```bash
-   curl -s http://127.0.0.1:9876/tabs | python3 /tmp/list_tabs.py
-   # list_tabs.py 内容：
-   # import sys,json; d=json.load(sys.stdin); tabs=d.get('result',[])
-   # for t in tabs: print('🟢' if t.get('active') else '⚪', t.get('id'), t.get('title','')[:40], t.get('url','')[:60])
-   ```
-
-2. **铁律：只能操作 agent 专属窗口，严禁操作用户窗口**
-   - 每次操作前必须先 `curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9876/agent_windows` 检查
-   - 如果 windowIds 为空 → 先用 `/new_window` 创建专属窗口（`focused:false` 后台创建）
-   - 之后所有操作（navigate/click/type/scroll）都必须带上 `tabId` 参数，确保在专属窗口的 tab 内操作
-   - **禁止**：不检查 agentWindows 就直接 navigate/click（会跑到用户活动 tab）
-   - **禁止**：使用 `focused:true` 或 `active:true`（会抢用户焦点）
-
-3. **bridge 重启后配对还在，不需要重新配对**
-   - 重启命令：`lsof -ti:9876 | xargs kill -9; cd ~/.openclaw/extensions/cloudhand && nohup node server.js > /tmp/cloudhand.log 2>&1 &`
-   - 重启后 agentWindows 清空，但 session token 持久化在 `~/.openclaw/chrome-bridge/config.json`
-
-4. **禁止主动截图！除非用户明确说"截图"**
-   - 优先用 `/eval` 直接执行 JS 提取内容（最灵活，覆盖所有 DOM）
-   - 用 `/get_text` 获取纯文本，用 `/get_html` 获取完整 HTML
-   - `/snapshot` 端点不稳定，不推荐用
-   - 截图消耗大量 token，只有在用户明确说"截图""截个图看看"时才用
-
-5. **操作顺序**：检查连接 → 确认/创建专属窗口 → 在专属窗口 navigate → 操作
+| | 本地模式 | 远程模式 |
+|---|---|---|
+| **启动方式** | `node server.js --local` | `node server.js` |
+| **绑定地址** | `127.0.0.1`（仅本机） | `0.0.0.0`（所有网卡） |
+| **鉴权** | 固定 Token `local-mode-token`，免配对 | 随机 `apiToken` + 6位配对码 |
+| **适用场景** | AI 运行在本机（Claude Code、Gemini 等） | AI 运行在远程 VPS（OpenClaw） |
 
 ---
 
 ## 鉴权
 
-所有操作端点需要 Bearer Token。获取方式（仅限本机）：
+所有操作端点需要 Bearer Token（免鉴权端点除外）。
 
-```bash
-# 获取 apiToken（只能从 127.0.0.1 调用）
-APITOKEN=$(curl -s http://127.0.0.1:9876/token | python3 -c "import sys,json; print(json.load(sys.stdin)['apiToken'])")
+```python
+import requests
 
-# 所有操作请求加上 header
-curl -s -H "Authorization: Bearer $APITOKEN" http://127.0.0.1:9876/tabs
+# 获取 apiToken（仅限 127.0.0.1 调用）
+TOKEN = requests.get('http://127.0.0.1:9876/token').json()['apiToken']
+H = {'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'}
 
-# 或者用 query param
-curl -s "http://127.0.0.1:9876/tabs?token=$APITOKEN"
+# 本地模式可直接使用固定 Token
+# TOKEN = 'local-mode-token'
 ```
 
-token 存在 `~/.openclaw/chrome-bridge/config.json`，bridge 重启后不变。
-
-免鉴权端点：`/status`、`/config`、`/pair/challenge`、`/pair/revoke`、`/token`（仅本机）。
+免鉴权端点：`/status`、`/token`（仅本机）。
 
 ---
 
-## 重要：实际调用方式
+## ⚡ 第一步：检查连接状态（每次使用前必做）
 
-CloudHand 通过 HTTP bridge 运行在 `http://127.0.0.1:9876`，**没有独立工具函数**。
-所有操作都用 `exec` + `curl` 调用。SKILL.md 里的「工具名」只是概念描述，实际执行见下方。
+```python
+status = requests.get('http://127.0.0.1:9876/status').json()
+```
 
-## 支持的端点
+返回字段：
+
+| 字段 | 说明 |
+|------|------|
+| `connected` | Chrome 扩展是否已连接（布尔值） |
+| `mode` | `local` 或 `remote` |
+| `attachedTabs` | 已 attach 的 tab 数量 |
+| `agentSessionId` | 当前 agent 使用的 CDP session ID |
+
+```python
+if not status.get('connected'):
+    print("⚠️ Chrome 扩展未连接，请启动 Chrome 并确认扩展已加载。")
+elif status.get('mode') == 'local':
+    print("🚀 本地直连模式，操作响应极快。")
+else:
+    print("🌐 远程模式已连接。")
+```
+
+---
+
+## 端点参考（v2.7.0）
+
+### 基础端点
+
+| 端点 | 方法 | 鉴权 | 说明 |
+|------|------|------|------|
+| `/status` | GET | ❌ | 连接状态 |
+| `/token` | GET | ❌ | 获取 apiToken（仅限 127.0.0.1） |
+| `/list_tabs` | GET | ✅ | 列出所有已知 tab |
+| `/get_page_info` | GET/POST | ✅ | 当前页面 URL 和 Title |
+
+### 标签页管理
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/status` | GET | 检查连接状态 |
-| `/tabs` | GET | 列出所有标签页 |
-| `/page_info` | GET | 当前页面标题/URL |
-| `/snapshot` | GET | 页面快照JSON：url/title/interactive元素列表（含selector），**首选操作方式** |
-| `/pair/challenge` | POST | 生成配对验证码 |
-| `/navigate` | POST | 导航到 URL |
-| `/screenshot` | POST | 截图（返回 base64）|
-| `/click` | POST | 点击元素 |
-| `/type` | POST | 输入文字 |
-| `/key` | POST | 按键 |
-| `/scroll` | POST | 滚动 |
-| `/eval` | POST | 执行任意 JS |
-| `/get_text` | POST | 获取页面文字 |
-| `/get_html` | POST | 获取页面 HTML |
-| `/find_elements` | POST | 查找元素 |
-| `/go_back` | POST | 后退 |
-| `/go_forward` | POST | 前进 |
-| `/select` | POST | 下拉框选择 |
-| `/set_value` | POST | 设置输入值 |
-| `/get_browser_state` | POST | **🆕 读取页面所有可交互元素（UI树），返回带索引的元素列表** |
-| `/click_element` | POST | **🆕 按UI树索引点击元素** |
-| `/input_text_element` | POST | **🆕 按UI树索引输入文字** |
-| `/ping_page_controller` | POST | 检查 page_controller 是否已注入 |
-| `/debug_dom` | POST | 诊断 domTree 状态（调试用）|
+| `/ensure_tab` | POST | 确保有 agent 专属 tab（无则创建） |
+| `/switch_tab` | POST | 切换 agent 到指定 tab（`{targetId}` 或 `{sessionId}`） |
+| `/navigate` | POST | 导航到 URL（`{url}`） |
+
+### ⭐ 页面理解（首选 Playwright 通道）
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/snapshot` | POST | ⭐ Playwright ariaSnapshot，返回带 `[ref=eN]` 的语义树 |
+| `/act` | POST | ⭐ 通过 ref 交互（click/type/press/hover/scroll/select/fill/wait/close） |
+| `/screenshot_with_labels` | POST | 截图 + 交互元素边框标签 |
+
+### 纯 CDP 操作（降级兜底）
+
+| 端点 | 方法 | 说明 | 已知局限 |
+|------|------|------|----------|
+| `/click` | POST | CSS 选择器或坐标点击 | `DOM.getBoxModel` 对不可见元素返回 0 |
+| `/type` | POST | CDP 键盘输入（可选 selector 聚焦） | `DOM.focus` 对 React 受控组件可能失败 |
+| `/eval` | POST | 执行 JavaScript | 兜底手段 |
+| `/screenshot` | POST | CDP 截图（base64 PNG） | — |
+| `/cdp` | POST | 万能 CDP 命令透传 | — |
+| `/get_ax_tree` | POST | 获取 Accessibility Tree | 原始节点数组 |
 
 ---
 
-## 🤖 UI树操作（推荐！像人一样操作页面）
+## 操作流程
 
-**v2.4.4+ 新功能**：读取页面 DOM 树，获取所有可交互元素的索引，按索引点击/输入，无需 CSS 选择器。
-
-### 标准流程
+### Step -1：读取站点经验
 
 ```python
-import requests, time
-APITOKEN = requests.get('http://127.0.0.1:9876/token').json()['apiToken']
-H = {'Authorization': f'Bearer {APITOKEN}'}
-
-# 1. 导航到页面
-requests.post('http://127.0.0.1:9876/navigate', headers=H, json={'url': 'https://example.com', 'tabId': tid})
-time.sleep(3)  # 等页面加载
-
-# 2. 读取页面所有可交互元素
-state = requests.post('http://127.0.0.1:9876/get_browser_state', headers=H, json={'tabId': tid}).json()
-content = state['result']['content']  # 格式: [1]<input placeholder="搜索">  [2]<a>登录</a> ...
-print(content)  # AI 看元素列表，决定点哪个
-
-# 3. 点击某个元素（按索引）
-requests.post('http://127.0.0.1:9876/click_element', headers=H, json={'tabId': tid, 'index': 2})
-
-# 4. 输入文字（按索引）
-requests.post('http://127.0.0.1:9876/input_text_element', headers=H, json={'tabId': tid, 'index': 1, 'text': '搜索关键词'})
+import os
+domain = 'toutiao.com'
+knowledge_path = f'/root/.openclaw/workspace/browser-knowledge/{domain}.md'
+if os.path.exists(knowledge_path):
+    with open(knowledge_path) as f:
+        print(f.read())  # 已有经验，直接按经验操作
+else:
+    print("新站点，需要先认知建模")
 ```
 
-### React Select / 复杂下拉框的点击方法
-
-普通 click 无法展开 React Select，必须发完整鼠标事件链：
+### Step 0：认知建模（首次访问新站点）
 
 ```python
-# 展开并选择某选项（一气呵成，不切换 world）
-script = """
-(function(){
-  var ctrl = document.querySelector('.cs-select-pro__control');  // 换成实际选择器
-  ['mouseover','mouseenter','mousemove','mousedown','mouseup','click'].forEach(function(t){
-    ctrl.dispatchEvent(new MouseEvent(t, {bubbles:true, cancelable:true, view:window}));
-  });
-  return new Promise(function(resolve){
-    setTimeout(function(){
-      var all = document.querySelectorAll('*');
-      for(var el of all){
-        if(el.children.length===0 && (el.innerText||'').trim()==='目标选项文字'){
-          el.click(); resolve('clicked');
-          return;
-        }
-      }
-      resolve('not found');
-    }, 150);
-  });
-})()
-"""
-requests.post('http://127.0.0.1:9876/eval', headers=H, json={'tabId': tid, 'expression': script})
+# 1. 确保有 agent tab
+requests.post('http://127.0.0.1:9876/ensure_tab', headers=H).json()
+
+# 2. 导航
+requests.post('http://127.0.0.1:9876/navigate', headers=H,
+    json={'url': 'https://www.toutiao.com'}).json()
+
+# 3. ⭐ 获取语义快照（Playwright ariaSnapshot）
+snap = requests.post('http://127.0.0.1:9876/snapshot', headers=H).json()
+print(snap['snapshot'])  # 带 [ref=eN] 的语义树
+# refs: snap['refs']  — ref 到 role/name 的映射
 ```
 
-### ⚠️ 注意事项
-- `get_browser_state` 每次调用都会重新扫描 DOM，索引会变化，点击前必须重新获取
-- 如果 `elementCount: 0`，说明 page_controller 未注入，用 `ping_page_controller` 检查
-- **React Select 下拉**：必须用完整鼠标事件链展开（见上方代码），不要绕道 URL 参数
-- **对话式操作**：读状态 → AI 决策 → 点击/输入 → 再读状态 → 循环，完全模拟人操作
+`/snapshot` 输出说明：
+- 语义树结构：`- role "name" [ref=eN]` — 带层级缩进的 ARIA 语义树
+- 每个可交互元素自动分配 `[ref=eN]` 编号，可直接用于 `/act` 端点
+- 筛选栏折叠文本（如 `text: 全网内容 只看头条`）会自动拆分为独立的虚拟 ref（`virtual: true`）
+- 返回字段：`snapshot`（文本）、`refs`（ref→role/name 映射）、`stats`（元素计数）、`url`、`title`
 
----
+**AI 分析任务**：
+1. **逻辑分区**：识别 header（导航区）、main（功能区）、footer（信息区）
+2. **寻找地标**：核心搜索框、登录按钮、菜单入口的 ref 编号
+3. **异步特征**：判断页面是否有懒加载、SPA 路由等需要等待的场景
+4. **存档经验**：将分析结论写入站点经验文件
 
-## 🎯 smart_locate（语义定位，推荐优先使用）
+### Step 1：执行任务
 
-**v2.4.5+ 新功能**：用自然语言描述意图，自动找到最匹配的元素并返回 browser_state 索引，无需扫描全部元素。
+**⭐ 首选：通过 /act + ref 操作（Playwright 通道）**
 
 ```python
-# 语义定位：找搜索框
-r = requests.post('http://127.0.0.1:9876/smart_locate', headers=H, json={
-    'tabId': tid,
-    'intent': '搜索'  # 支持：搜索 / 按钮 / 登录 / 输入 / 链接 / 空字符串(返回所有关键元素)
+# 从 snapshot 中找到 textbox "搜索" [ref=e12]
+# 输入关键词并按回车
+result = requests.post('http://127.0.0.1:9876/act', headers=H, json={
+    'kind': 'type',
+    'ref': 'e12',
+    'text': 'AI 编程',
+    'submit': True  # 自动按 Enter
 }).json()
 
-for m in r['matches']:
-    idx = m.get('browserStateIndex')  # 可直接用于 click_element / input_text_element
-    print(f"[{idx}] {m['type']} | {m.get('placeholder') or m.get('text') or m.get('id')}")
-
-# 拿到索引直接点击/输入
-requests.post('http://127.0.0.1:9876/input_text_element', headers=H,
-    json={'tabId': tid, 'index': r['matches'][0]['browserStateIndex'], 'text': '关键词'})
+# 响应中自动包含操作后的页面状态
+print(result['actionSummary'])  # 人类可读摘要
+# result['refs'] — 操作后刷新的 ref 映射，可直接用于下一步
+# result.get('newTab') — 如果有新标签页打开
+# result.get('newTabSnapshot') — 新标签页的预加载 snapshot
 ```
 
-**支持的 intent：**
-- `搜索` / `search` → 找搜索框（input）
-- `按钮` / `button` → 找主要按钮
-- `登录` / `login` → 找登录相关元素
-- `输入` / `input` → 找所有输入框
-- `链接` / `link` → 找主要导航链接
-- `内容` / `content` → 找主内容区域
-- `''`（空字符串）→ 返回所有关键元素概览
+**`/act` 响应结构（重要）**：
 
-**比 get_browser_state 快的原因：** 不返回 500 个元素，只返回最匹配的 5 个，AI 无需扫描。
+每次 `/act` 调用后，响应中自动包含操作后的页面状态：
 
----
-
-## 标准流程（可直接复用的 curl 命令）
-
-### 1. 检查连接
-```bash
-curl -s http://127.0.0.1:9876/status
-# 返回: {"connected":true,"paired":true,...}
-# connected=false 时需要配对
-```
-
-### 2. 配对（未连接时）
-```bash
-curl -s -X POST http://127.0.0.1:9876/pair/challenge
-# 返回验证码，发给用户在 Chrome 扩展中输入
-```
-
-### 3. 导航到网页
-```bash
-curl -s -X POST http://127.0.0.1:9876/navigate \
-  -H 'Content-Type: application/json' \
-  -d '{"url":"https://www.example.com"}'
-```
-
-### 4. 点击元素
-```bash
-curl -s -X POST http://127.0.0.1:9876/click \
-  -H 'Content-Type: application/json' \
-  -d '{"selector":"#button-id"}'
-```
-
-### 5. 输入文字
-```bash
-curl -s -X POST http://127.0.0.1:9876/type \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"要输入的内容"}'
-```
-
-### 6. 按键
-```bash
-curl -s -X POST http://127.0.0.1:9876/key \
-  -H 'Content-Type: application/json' \
-  -d '{"key":"Enter"}'
-```
-
-### 7. 截图保存
-```bash
-# 截图保存到文件（⚠️ 只在用户明确说「截图」时才截！）
-curl -s -X POST http://127.0.0.1:9876/screenshot \
-  -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $APITOKEN" \
-  -d '{"tabId": <tabId>}' | python3 -c "
-import sys, json, base64
-obj = json.loads(sys.stdin.read())
-b64 = obj['result'].split(',')[1]
-with open('/tmp/cloudhand_shot.png','wb') as f:
-    f.write(base64.b64decode(b64))
-print('saved to /tmp/cloudhand_shot.png')
-"
-# 截图后通过 OpenClaw 当前对话渠道发给用户（不要硬编码渠道或用户ID）
-```
-
-### 8. 执行 JS（找不到元素时用）
-```bash
-curl -s -X POST http://127.0.0.1:9876/eval \
-  -H 'Content-Type: application/json' \
-  -d '{"expression":"document.title"}'
-
-# 点击某个按钮
-curl -s -X POST http://127.0.0.1:9876/eval \
-  -H 'Content-Type: application/json' \
-  -d '{"expression":"document.querySelector(\"#btn\").click()"}'
-```
-
-## 快速测试流程（完整示例）
-
-当用户说「测试 CloudHand」、「测试浏览器」时，直接执行：
-
-```bash
-# 1. 检查连接
-curl -s http://127.0.0.1:9876/status
-
-# 2. 打开 Bing
-curl -s -X POST http://127.0.0.1:9876/navigate \
-  -H 'Content-Type: application/json' \
-  -d '{"url":"https://www.bing.com"}'
-
-# 3. 点击搜索框
-curl -s -X POST http://127.0.0.1:9876/click \
-  -H 'Content-Type: application/json' \
-  -d '{"selector":"#sb_form_q"}'
-
-# 4. 输入搜索词
-curl -s -X POST http://127.0.0.1:9876/type \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"www.dabeizi.com"}'
-
-# 5. 回车搜索
-curl -s -X POST http://127.0.0.1:9876/key \
-  -H 'Content-Type: application/json' \
-  -d '{"key":"Enter"}'
-
-# 6. 等待加载后截图
-sleep 2
-# 然后执行截图+发飞书（见第7步）
-```
-
-## 常见问题
-
-| 问题 | 解决 |
-|------|------|
-| `connected=false` | 执行 `/pair/challenge` → 把验证码发给用户在扩展输入 |
-| 点击无效 | 改用 `/eval` 直接执行 JS click |
-| 页面未加载完 | `sleep 2` 后再操作 |
-| 截图空白 | 重试一次 |
-| `Unknown command` | 检查端点名是否正确，参考上方端点表 |
-
-## 🛡️ 窗口管理铁律（必须遵守）
-
-**原则：我有一个专属窗口，所有任务在里面开新 tab，不新开窗口。**
-
-```bash
-# 查看我管理的窗口
-curl -s -H "Authorization: Bearer $APITOKEN" http://127.0.0.1:9876/agent_windows
-
-# 如果 windowIds 为空，先开一个专属窗口（只做一次）
-curl -s -X POST http://127.0.0.1:9876/new_window \
-  -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $APITOKEN" \
-  -d '{"url":"about:blank","focused":false}'
-# 记录返回的 windowId 到 TOOLS.md
-
-# 每次新任务：在专属窗口开新 tab（不要 new_window！）
-AGENT_WINDOW_ID=$(curl -s -H "Authorization: Bearer $APITOKEN" http://127.0.0.1:9876/agent_windows | python3 -c "import sys,json; ids=json.load(sys.stdin)['windowIds']; print(ids[0] if ids else '')")
-curl -s -X POST http://127.0.0.1:9876/new_tab \
-  -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $APITOKEN" \
-  -d "{\"windowId\":$AGENT_WINDOW_ID}"
-
-# 关闭所有我的窗口（用户要求时）
-curl -s -X POST http://127.0.0.1:9876/agent_windows/close_all
-```
-
-**例外**：用户明确说「开新窗口」时才用 `new_window`。
-
-## 标准操作前置脚本（必用，替代硬编码 windowId）
-
-每次操作浏览器前，先用这段脚本动态获取/创建专属窗口，再在里面开 tab：
-
-```bash
-# 获取 agent 专属窗口（没有则自动新开）
-AGENT_WIN=$(curl -s http://127.0.0.1:9876/agent_windows | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-print(d['windowIds'][0] if d['windowIds'] else '')
-")
-
-if [ -z "$AGENT_WIN" ]; then
-  AGENT_WIN=$(curl -s -X POST http://127.0.0.1:9876/new_window \
-    -H 'Content-Type: application/json' -d '{"url":"about:blank"}' | \
-    python3 -c "import sys,json; print(json.load(sys.stdin)['result']['windowId'])")
-fi
-
-# 在专属窗口开新 tab
-TAB_ID=$(curl -s -X POST http://127.0.0.1:9876/new_tab \
-  -H 'Content-Type: application/json' \
-  -d "{\"windowId\":$AGENT_WIN}" | \
-  python3 -c "import sys,json; print(json.load(sys.stdin)['result']['tabId'])")
-
-# 然后正常 navigate
-curl -s -X POST http://127.0.0.1:9876/navigate \
-  -H 'Content-Type: application/json' \
-  -d '{"url":"https://example.com"}'
-```
-
-**禁止硬编码 windowId！永远用上面的动态脚本。**
-
----
-
-## 🚀 新增高效 API（v1.1.0）
-
-### 1. `/snapshot_ai` — AI优化快照（推荐替代 get_browser_state）
-
-返回**稳定 ref + 纯文本树**，token 消耗比 `get_browser_state` 少 80%。
-
-```bash
-curl -s -X POST http://127.0.0.1:9876/snapshot_ai \
-  -H "Authorization: Bearer $APITOKEN" \
-  -H 'Content-Type: application/json' \
-  -d "{\"tabId\":$TAB_ID}"
-```
-
-返回格式：
-```json
-{
-  "ok": true,
-  "result": {
-    "url": "https://...",
-    "title": "页面标题",
-    "text": "[e1] button: 搜索\n[e2] textbox: 关键词 (placeholder: 请输入)\n[e3] link: 最新资讯",
-    "refs": [
-      {"ref": "e1", "role": "button", "name": "搜索", "selector": "#su"},
-      {"ref": "e2", "role": "textbox", "placeholder": "请输入", "selector": "#kw"}
-    ]
-  }
-}
-```
-
-**使用方式：**
-1. 调 `/snapshot_ai` 读取页面，AI 从 `text` 里找目标元素的 `ref`（如 `e2`）
-2. 用 ref 对应的 `selector` 调 `click_element` 或 `input_text_element`
-
-**ref 生成优先级：** `data-e2e` → `data-testid` → `id` → `name` → `aria-label` → `placeholder` → 位置哈希
-
----
-
-### 2. `/fill_batch` — 批量填表单（减少 66% 请求数）
-
-一次请求填多个字段，适合登录页、注册页、搜索表单。
-
-```bash
-curl -s -X POST http://127.0.0.1:9876/fill_batch \
-  -H "Authorization: Bearer $APITOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "tabId": 123,
-    "fields": [
-      {"selector": "#username", "value": "user@example.com"},
-      {"selector": "#password", "value": "secret123"},
-      {"selector": "input[name=remember]", "checked": true}
-    ]
-  }'
-```
-
-- 支持 `value`（文本输入）和 `checked`（checkbox/radio）
-- 返回每个字段的操作结果
-
----
-
-### 3. `/wait_for_text` — 条件等待（替代 sleep）
-
-等待页面出现特定文字，比固定 `sleep` 节省 30-50% 等待时间。
-
-```bash
-curl -s -X POST http://127.0.0.1:9876/wait_for_text \
-  -H "Authorization: Bearer $APITOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"tabId": 123, "text": "加载完成", "timeout": 10000}'
-```
-
-- `timeout`：最长等待毫秒数（默认 10000ms）
-- 页面出现该文字后立即返回 `{ok: true, elapsed: 1234}`
-- 超时返回 `{ok: false, error: "timeout"}`
-
----
-
----
-
-### 4. `get_ax_tree` — Accessibility Tree（AI语义理解，v2.4.6新增）
-
-获取页面无障碍树，比 HTML DOM 节省 70% token，AI 理解更精准。
-
-```bash
-curl -s -X POST http://127.0.0.1:9876/command \
-  -H "Authorization: Bearer $APITOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"tabId": 123, "command": "get_ax_tree", "params": {"compact": true}}'
-```
-
-返回紧凑文本格式（compact=true，默认）：
-```
-heading "知乎 - 与世界分享你的知识"
-@1 searchbox "搜索"
-@2 button "搜索"
-link "首页"
-@3 button "提问"
-...
-```
-
-- `@N` 前缀 = 可交互元素，可直接用 `click` 的 ref
-- `compact: false` 返回原始 JSON 节点数组
-- 适合：页面结构分析、找按钮/输入框、理解页面内容
-
----
-
-### 5. `fetch_with_cookies` — 带登录态HTTP请求（v2.4.6新增）
-
-直接用当前 tab 的登录 cookie 发 HTTP 请求，比操作 DOM 快10倍，适合调用网站内部 API。
-
-```bash
-curl -s -X POST http://127.0.0.1:9876/command \
-  -H "Authorization: Bearer $APITOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "tabId": 123,
-    "command": "fetch_with_cookies",
-    "params": {
-      "url": "https://www.zhihu.com/api/v4/questions/123/answers",
-      "method": "GET",
-      "headers": {"Accept": "application/json"}
-    }
-  }'
-```
-
-- 自动带上当前 tab 域名的所有 cookie（登录态）
-- 支持 GET/POST/PUT，支持自定义 headers 和 body
-- 返回 `{status, headers, body, bodyText}`
-- **最佳场景**：知乎/B站/微博等已登录网站的数据抓取，无需模拟点击
-
----
-
-## 📋 推荐操作流程（v1.1.0 最佳实践）
-
-```
-1. 获取/创建 agent 窗口
-2. new_tab → navigate → wait_for_text（等页面关键词出现）
-3. snapshot_ai → AI 读 text 字段，选目标 ref → 取 selector
-4. click / fill_batch（用 selector 操作）
-5. 任务完成 → 清理 tab
-```
-
-**旧流程（仍然有效但较慢）：**
-```
-navigate → sleep(3) → get_browser_state → AI 选索引 → click_element
-```
-
----
-
-## 🆕 v2.7.0 新增功能
-
-### 6. `cdp_click` — CDP 真实鼠标点击（绕过反bot检测）
-
-用 Chrome DevTools Protocol 模拟真实鼠标事件序列（mouseMoved → mousePressed → mouseReleased），绕过检测 `isTrusted` 的反机器人防护。
-
-```bash
-curl -s -X POST http://127.0.0.1:9876/command \
-  -H "Authorization: Bearer $APITOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"tabId": 123, "command": "cdp_click", "params": {"selector": "#submit-btn"}}'
-```
-
-参数：
-- `selector`：CSS 选择器（优先）
-- `x` / `y`：坐标（selector 找不到时用坐标）
-
-返回：`{ok: true, x: 123, y: 456}`
-
-**适用场景**：微博/抖音/知乎等检测 `isTrusted` 的按钮点击，普通 `click` 失效时换这个。
-
----
-
-### 7. `cdp_type` — CDP 真实键盘输入（逐键模拟）
-
-逐字符模拟真实键盘 keyDown/char/keyUp 事件，绕过反机器人输入检测。
-
-```bash
-curl -s -X POST http://127.0.0.1:9876/command \
-  -H "Authorization: Bearer $APITOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"tabId": 123, "command": "cdp_type", "params": {"selector": "input[name=search]", "text": "hello world", "delay": 50}}'
-```
-
-参数：
-- `selector`：先 focus 该元素再输入
-- `text`：要输入的文字
-- `delay`：每个字符间隔毫秒（默认 30ms，模拟人工输入速度）
-
-**适用场景**：搜索框、登录表单等有输入防检测的站点。
-
----
-
-### 8. `network_capture` — 抓取网络请求
-
-监听页面指定时间段内的所有网络请求（URL + 状态码 + 响应体）。
-
-```bash
-curl -s -X POST http://127.0.0.1:9876/command \
-  -H "Authorization: Bearer $APITOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"tabId": 123, "command": "network_capture", "params": {"waitMs": 3000, "filter": "api"}}'
-```
-
-参数：
-- `waitMs`：监听时长（毫秒，默认 3000，最大 15000）
-- `filter`：URL 过滤关键词（可选，如 `"api"` 只捕获含 api 的请求）
-
-返回：`{ok: true, count: 5, requests: [{url, method, status, body}...]}`
-
-**适用场景**：
-- 发现网站内部 API 端点（配合 `fetch_with_cookies` 直接调用）
-- 调试页面加载问题
-- 抓取 XHR/Fetch 请求的响应数据
-
----
-
-### 9. `console_capture` — 捕获 Console 日志和 JS 错误
-
-监听页面指定时间段内的所有 console 输出和 JS 异常。
-
-```bash
-curl -s -X POST http://127.0.0.1:9876/command \
-  -H "Authorization: Bearer $APITOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"tabId": 123, "command": "console_capture", "params": {"waitMs": 2000}}'
-```
-
-参数：
-- `waitMs`：监听时长（毫秒，默认 2000）
-
-返回：`{ok: true, count: 3, logs: [{type: "log"|"error"|"warn", args: [...], timestamp}...]}`
-
-**适用场景**：
-- 调试页面 JS 错误
-- 捕获网站通过 console 输出的数据
-- 验证操作是否触发了预期的 JS 逻辑
-
----
-
-### 10. `/version` — 版本检查端点
-
-```bash
-curl -s http://127.0.0.1:9876/version
-# 返回: {"version": "2.7.0", "ok": true}
-```
-
-扩展也会定期调用此端点检查是否有新版本可用，options 页右下角显示版本号，点击可触发版本检查。
-
----
-
-## 📊 v2.7.0 完整命令速查表
-
-| 命令 | 说明 | 版本 |
+| 字段 | 说明 | 用途 |
 |------|------|------|
-| `navigate` | 导航到 URL | v1.0 |
-| `screenshot` | 截图（base64） | v1.0 |
-| `get_html` | 获取页面 HTML | v1.0 |
-| `get_text` | 获取页面文本 | v1.0 |
-| `click` | JS 点击（selector/index） | v1.0 |
-| `type` | JS 输入文字 | v1.0 |
-| `set_value` | 直接设置 input value | v1.0 |
-| `key` | 发送按键（Enter/Tab等） | v1.0 |
-| `hotkey` | 发送组合键 | v1.0 |
-| `scroll` | 滚动页面 | v1.0 |
-| `hover` | 鼠标悬停 | v1.0 |
-| `select` | 选择 select 元素 | v1.0 |
-| `wait_for` | 等待元素出现 | v1.0 |
-| `get_cookies` | 获取 Cookie | v1.0 |
-| `close_tab` | 关闭 tab | v1.0 |
-| `go_back` / `go_forward` | 前进/后退 | v1.0 |
-| `eval` | 执行 JS 表达式 | v1.0 |
-| `find_elements` | 查找元素列表 | v1.0 |
-| `page_info` | 页面基本信息 | v1.0 |
-| `get_browser_state` | 浏览器状态（旧版） | v1.0 |
-| `click_element` | 点击元素（旧版） | v1.0 |
-| `input_text_element` | 输入文字（旧版） | v1.0 |
-| `get_ax_tree` | Accessibility Tree | v2.4.6 |
-| `fetch_with_cookies` | 带登录态 HTTP 请求 | v2.4.6 |
-| `cdp_click` | CDP 真实鼠标点击 | v2.7.0 |
-| `cdp_type` | CDP 真实键盘输入 | v2.7.0 |
-| `network_capture` | 抓取网络请求 | v2.7.0 |
-| `console_capture` | 捕获 Console 日志 | v2.7.0 |
+| `actionSummary` | 人类可读摘要，含新标签页提醒 | 判断操作结果和下一步动作 |
+| `refs` | 操作后自动刷新的 ref 映射 | 直接用于下一次 `/act`，**无需再调 `/snapshot`** |
+| `newTab` | 新打开的标签页信息（targetId/url） | 判断是否需要 `/switch_tab` |
+| `newTabSnapshot` | 新标签页的预加载 snapshot + refs | 切换后可直接操作，省一次 `/snapshot` |
+
+示例 `actionSummary`：
+```
+页面快照已获取 (69 个交互元素)；⚠️ 新标签页已打开: https://so.toutiao.com/search?... — 需 switch_tab 切换；新标签页快照已预加载
+```
+
+> **关键优化**：连续操作时，AI 应直接从 `/act` 响应的 `refs` 中查找下一步目标 ref，而非每次都重新调用 `/snapshot`。
+
+**`/act` 支持的 kind：**
+
+| kind | 必需参数 | 说明 |
+|------|----------|------|
+| `click` | `ref` | 点击元素 |
+| `type` | `ref`, `text` | 输入文本（`submit=true` 自动回车，`slowly=true` 逐字输入） |
+| `press` | `key` | 按键（如 `Enter`、`Tab`、`Escape`） |
+| `hover` | `ref` | 悬停 |
+| `select` | `ref`, `option` | 选择下拉选项 |
+| `scroll` | `x`, `y` | 滚动（可选 `originX`/`originY` 指定锚点） |
+| `scrollIntoView` | `ref` | 滚动到元素可见 |
+| `fill` | `fields` | 批量填表（`[{ref, type, value}]`） |
+| `wait` | 见下方 | 条件等待 |
+| `clickAt` | `x`, `y` | 坐标点击 |
+| `typeAt` | `x`, `y`, `text` | 坐标位置输入 |
+| `drag` | `startRef`, `endRef` | ref 到 ref 拖拽 |
+| `evaluate` | `fn` | 在页面上下文执行 JS |
+| `close` | — | 关闭当前标签页 |
+
+**`wait` kind 参数：**
+
+| 参数 | 说明 |
+|------|------|
+| `timeMs` | 固定等待毫秒数 |
+| `text` | 等待页面出现指定文本 |
+| `textGone` | 等待指定文本消失 |
+| `selector` | 等待 CSS 选择器出现 |
+| `url` | 等待页面 URL 匹配 |
+
+**降级方案：纯 CDP（仅当 /act 失败时）**
+
+```python
+# CSS 选择器点击
+requests.post('http://127.0.0.1:9876/click', headers=H,
+    json={'selector': '#search-button'}).json()
+
+# 坐标点击
+requests.post('http://127.0.0.1:9876/click', headers=H,
+    json={'x': 100, 'y': 200}).json()
+
+# CDP 键盘输入（可选先聚焦 selector）
+requests.post('http://127.0.0.1:9876/type', headers=H,
+    json={'text': 'hello', 'selector': '#search-input'}).json()
+```
+
+### 新标签页处理
+
+搜索/链接可能在新标签页中打开结果：
+
+```python
+# 1. 从 /act 响应检查 newTab
+if result.get('newTab'):
+    new_target = result['newTab']['targetId']
+    # 切换到新标签页
+    requests.post('http://127.0.0.1:9876/switch_tab', headers=H,
+        json={'targetId': new_target}).json()
+
+# 2. 或手动查找
+tabs = requests.get('http://127.0.0.1:9876/list_tabs', headers=H).json()
+for tab in tabs['tabs']:
+    if 'search' in tab.get('url', ''):
+        requests.post('http://127.0.0.1:9876/switch_tab', headers=H,
+            json={'targetId': tab['targetId']}).json()
+        break
+```
+
+### 截图
+
+```python
+# 纯 CDP 截图（base64 PNG）
+shot = requests.post('http://127.0.0.1:9876/screenshot', headers=H).json()
+# shot['data'] = 'data:image/png;base64,...'
+
+# 带标签截图（交互元素自动标注边框和编号）
+labeled = requests.post('http://127.0.0.1:9876/screenshot_with_labels', headers=H,
+    json={'filterMode': 'clickable', 'maxLabels': 100}).json()
+# labeled['data'] = base64 PNG（带标签层）
+# labeled['snapshot'] / labeled['refs'] — 语义快照和 ref 映射
+```
+
+### 执行 JavaScript（兜底）
+
+```python
+result = requests.post('http://127.0.0.1:9876/eval', headers=H,
+    json={'expression': 'document.title'}).json()
+print(result['result'])
+```
+
+### 万能 CDP 透传
+
+```python
+# 任意 CDP 命令
+result = requests.post('http://127.0.0.1:9876/cdp', headers=H,
+    json={'method': 'DOM.getDocument', 'params': {'depth': 0}}).json()
+```
+
+---
+
+## Step 2：复盘与经验持久化
+
+**⚠️ 每次任务完成后，必须写入站点经验，不可跳过。**
+
+```python
+# 追加经验到站点文件
+domain = 'toutiao.com'
+knowledge_path = f'/root/.openclaw/workspace/browser-knowledge/{domain}.md'
+os.makedirs(os.path.dirname(knowledge_path), exist_ok=True)
+with open(knowledge_path, 'a') as f:
+    f.write(f"""
+## 更新 {datetime.now().strftime('%Y-%m-%d')}
+- 搜索框 ref: textbox "搜索" [ref=e12]
+- 筛选栏虚拟 ref: "只看头条" [ref=e68]、"不限时间" [ref=e69]
+- 时间下拉菜单: 点击"不限时间"后展开，选项自动生成新的虚拟 ref
+- 搜索结果在新标签页打开，需要 switch_tab
+""")
+```
+
+**必须记录的四类信息：**
+
+1. **加载节奏**：navigate 后需等多久，是否需要 wait
+2. **关键元素 ref**：搜索框、按钮、筛选栏的 ref 编号
+3. **操作注意事项**：哪些元素是虚拟 ref、哪些需要先展开再点击
+4. **踩坑记录**：失败的操作路径和原因
+
+---
+
+## 核心约束
+
+1. **先理解后操作**：必须先 `/snapshot` 理解页面，严禁盲目操作
+2. **Playwright 优先**：操作优先用 `/snapshot` + `/act`（内置 actionability 检查），`/click` + `/type`（纯 CDP）仅作降级兜底
+3. **经验持久化**：所有认知成果存入 `browser-knowledge/`，一次学习终身复用
+4. **专属标签页**：所有操作在 agent 专属 tab 中进行（`/ensure_tab` 自动管理），不干扰用户
+5. **截图验证**：关键操作后截图确认结果，不假设操作成功
+6. **新标签页策略**：`/act` 响应中自动检测新标签页并预加载 snapshot。可靠做法是 `/list_tabs` 确认 → `/switch_tab` 切换
+7. **React Select 下拉框**：非原生 `<select>` 的 `role=combobox` 在不可见的 `<input>` 上，直接 `/act click` 会超时。替代方案：点击虚拟 ref 文本标签打开下拉菜单，然后 `/act click` 目标选项
+8. **禁止 JS 替代已有命令**：不用 `/eval` 注入 JS 做 DOM 操作，优先用 `/act` 或纯 CDP 命令
+9. **未连接时必须告知用户**：不要静默失败
+
+---
+
+## 底层实现说明（v2.7.0）
+
+### Playwright 通道（⭐ 首选）
+
+| 端点 | 底层实现 |
+|------|---------|
+| `/snapshot` | Playwright `page.locator('body').ariaSnapshot({ ref: true })` → `buildRoleSnapshot()` 生成带 ref 的语义树 |
+| `/act click eN` | `refLocator()` → Playwright `locator.click()`（内置 actionability 检查） |
+| `/act type eN text` | `refLocator()` → Playwright `locator.fill()` 或 `keyboard.type()`（自动处理 focus） |
+| `/navigate` | Playwright `page.goto()` |
+
+### 纯 CDP 通道（降级兜底）
+
+| 端点 | 底层 CDP 实现 |
+|------|-------------|
+| `/click --selector` | `DOM.getDocument` → `DOM.querySelectorAll` → `DOM.getBoxModel` → `Input.dispatchMouseEvent` |
+| `/type --selector` | `DOM.getDocument` → `DOM.querySelector` → `DOM.focus` → `Input.dispatchKeyEvent` |
+| `/screenshot` | `Page.captureScreenshot` |
+| `/eval` | `Runtime.evaluate` |
+| `/get_ax_tree` | `Accessibility.getFullAXTree` |
+
+---
+
+## 架构概览
+
+```
+远程 AI (OpenClaw VPS)          本地 AI (Claude Code / Gemini)
+    │                                │
+    ▼ HTTP REST (Bearer Token)       ▼ HTTP REST (local-mode-token)
+              server.js:9876
+                   │
+              WebSocket /ws
+                   │
+                   ▼
+            Chrome Extension
+            (chrome.debugger)
+                   │
+                   ▼
+            Agent 专属 Tab
+```
+
+### WebSocket 端点
+
+| 路径 | 用途 |
+|------|------|
+| `/ws` | Chrome 扩展连接（CDP 命令中继） |
+| `/cdp` | Playwright `connectOverCDP` 连接（服务端内部使用） |
+
+### CDP HTTP 端点（Playwright 内部用）
+
+| 路径 | 用途 |
+|------|------|
+| `/json/version` | CDP 协议版本信息 |
+| `/json/list` | CDP target 列表 |

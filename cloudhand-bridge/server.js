@@ -59,7 +59,7 @@ app.use((req, res, next) => {
 });
 
 // 免鉴权白名单
-const PUBLIC_PATHS = new Set(['/status', '/config', '/pair/challenge', '/token']);
+const PUBLIC_PATHS = new Set(['/status', '/config', '/token']);
 
 // Bearer Token 鉴权
 app.use((req, res, next) => {
@@ -73,8 +73,8 @@ app.use((req, res, next) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
-const cdpWss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 }); // 1MB 防 DoS
+const cdpWss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
 const cdpClients = new Set(); // Playwright 等 CDP 客户端
 
 // 路由 WebSocket 升级请求
@@ -116,11 +116,20 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
-  console.log('[WS] 扩展已连接');
+  const remoteAddr = req.socket.remoteAddress || 'unknown';
+  console.log(`[WS] 扩展已连接 (来源: ${remoteAddr})`);
 
-  // 关闭旧连接
+  // 连接互斥：踢掉旧连接并通知原因
   if (extensionSocket && extensionSocket.readyState === extensionSocket.OPEN) {
-    extensionSocket.close(1000, 'New connection replacing old');
+    try {
+      extensionSocket.send(JSON.stringify({
+        type: 'event',
+        event: 'connection.replaced',
+        payload: { reason: '有新设备连接，当前连接已被替换', newIP: remoteAddr }
+      }));
+    } catch (e) { /* 旧连接可能已不可用 */ }
+    extensionSocket.close(1000, 'Replaced by new connection');
+    console.log('[WS] 旧扩展连接已断开（被新连接替换）');
   }
   extensionSocket = ws;
 
@@ -404,9 +413,9 @@ app.get('/json', (req, res) => res.redirect('/json/list'));
 
 // ── REST API ────────────────────────────────────────────
 
-// 获取 apiToken（仅限 127.0.0.1 本机访问）
+// 获取 apiToken（仅限 127.0.0.1 本机访问，使用 socket 级 IP 防 X-Forwarded-For 伪造）
 app.get('/token', (req, res) => {
-  const ip = req.ip || req.connection.remoteAddress || '';
+  const ip = req.socket.remoteAddress || '';
   if (!ip.includes('127.0.0.1') && !ip.includes('::1')) {
     return res.status(403).json({ error: 'Local access only' });
   }
@@ -1480,16 +1489,7 @@ app.post('/screenshot_with_labels', async (req, res) => {
   }
 });
 
-// ── 配对 API（保留远程模式接口） ──────────────────────────
-
-let pendingChallenge = null;
-
-app.post('/pair/challenge', (req, res) => {
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-  pendingChallenge = { code, expiresAt: Date.now() + 30000 };
-  console.log(`[Pair] Challenge generated: ${code}`);
-  res.json({ code, expiresAt: pendingChallenge.expiresAt });
-});
+// 配对码已移除（v2.7.0）。远程模式使用 Token 直连：ws://ip:port/ws?token=xxx
 
 // ── 启动服务器 ──────────────────────────────────────────
 server.listen(PORT, HOST, () => {

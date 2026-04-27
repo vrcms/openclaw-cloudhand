@@ -1,6 +1,6 @@
 // CloudHand Popup v2.7.0 - 连接状态管理
 // 通过 chrome.storage.local 与 background.js 通信
-// 远程连接：地址 + Token 直连（无配对码）
+// 远程连接：粘贴完整 URL（ws://ip:port/ws?token=xxx）一步到位
 
 const $ = (id) => document.getElementById(id)
 
@@ -23,16 +23,18 @@ async function refreshUI() {
   const remoteUp = !!stored.remoteConnected
   const host = stored.remoteHost || ''
   const port = stored.remotePort || ''
+  const token = stored.remoteToken || ''
   $('remoteDot').className = `dot ${remoteUp ? 'green' : host ? 'red' : 'yellow'}`
   $('remoteStatus').textContent = remoteUp ? '已连接' : (host ? '未连接' : '未配置')
   $('remoteLabel').textContent = host ? `远程 (${host}${port ? ':' + port : ''})` : '远程'
 
-  // 填充输入框（仅当用户没有正在编辑时）
-  if (document.activeElement !== $('remoteHost')) {
-    $('remoteHost').value = host ? `${host}${port ? ':' + port : ''}` : ''
-  }
-  if (document.activeElement !== $('remoteToken')) {
-    $('remoteToken').value = stored.remoteToken || ''
+  // 回填 URL 输入框（仅当用户没有正在编辑时）
+  if (document.activeElement !== $('remoteUrl')) {
+    if (host) {
+      $('remoteUrl').value = `ws://${host}${port ? ':' + port : ':9876'}/ws?token=${token}`
+    } else {
+      $('remoteUrl').value = ''
+    }
   }
 
   // 按钮状态
@@ -54,30 +56,45 @@ async function updateTabsInfo() {
   }
 }
 
-// 解析 host:port 输入
-function parseHostPort(input) {
+// 解析完整 WebSocket URL: ws://host:port/ws?token=xxx
+function parseWsUrl(input) {
   const s = (input || '').trim()
   if (!s) return null
-  // 去掉协议前缀和路径
-  const clean = s.replace(/^(wss?|https?):\/\//, '').replace(/\/.*$/, '')
-  const parts = clean.split(':')
-  const host = parts[0]
-  const port = parts.length > 1 ? parseInt(parts[1], 10) : 9876
-  if (!host) return null
-  return { host, port }
+
+  try {
+    // 标准化：补全协议头
+    let url = s
+    if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+      url = 'ws://' + url
+    }
+    // 用 URL 解析（ws:// 替换为 http:// 以便 URL 构造器识别）
+    const parsed = new URL(url.replace(/^ws/, 'http'))
+    const host = parsed.hostname
+    const port = parseInt(parsed.port, 10) || 9876
+    const token = parsed.searchParams.get('token') || ''
+    if (!host) return null
+    return { host, port, token }
+  } catch {
+    // URL 解析失败，尝试简单的 host:port 格式
+    const clean = s.replace(/^(wss?|https?):\/\//, '').replace(/\/.*$/, '')
+    const parts = clean.split(':')
+    const host = parts[0]
+    const port = parts.length > 1 ? parseInt(parts[1], 10) : 9876
+    if (!host) return null
+    return { host, port, token: '' }
+  }
 }
 
 // 连接远程
 $('btnConnect').addEventListener('click', async () => {
-  const parsed = parseHostPort($('remoteHost').value)
-  if (!parsed) {
-    $('errorMsg').textContent = '请输入有效的服务器地址'
+  const parsed = parseWsUrl($('remoteUrl').value)
+  if (!parsed || !parsed.host) {
+    $('errorMsg').textContent = '请输入有效的连接地址'
     $('errorMsg').style.display = 'block'
     return
   }
-  const token = $('remoteToken').value.trim()
-  if (!token) {
-    $('errorMsg').textContent = '请输入 Token'
+  if (!parsed.token) {
+    $('errorMsg').textContent = 'URL 中缺少 token 参数'
     $('errorMsg').style.display = 'block'
     return
   }
@@ -90,7 +107,7 @@ $('btnConnect').addEventListener('click', async () => {
   await chrome.storage.local.set({
     remoteHost: parsed.host,
     remotePort: parsed.port,
-    remoteToken: token,
+    remoteToken: parsed.token,
     remoteAction: 'connect',
   })
 

@@ -25,7 +25,7 @@ async function refreshUI() {
   const host = stored.remoteHost || ''
   const port = stored.remotePort || ''
   const token = stored.remoteToken || ''
-  const protocol = stored.remoteProtocol || (host === '127.0.0.1' || host === 'localhost' ? 'ws' : 'wss')
+  const protocol = stored.remoteProtocol || 'ws'
   $('remoteDot').className = `dot ${remoteUp ? 'green' : host ? 'red' : 'yellow'}`
   $('remoteStatus').textContent = remoteUp ? '已连接' : (host ? '未连接' : '未配置')
   $('remoteLabel').textContent = host ? `远程 (${host}${port ? ':' + port : ''})` : '远程'

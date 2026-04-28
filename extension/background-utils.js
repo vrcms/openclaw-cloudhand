@@ -47,7 +47,7 @@ export function buildRemoteWsUrl(protocol, host, port, token) {
   if (!h || !t) {
     throw new Error("Missing remote host or token");
   }
-  const p = protocol || (h === "127.0.0.1" || h === "localhost" ? "ws" : "wss");
+  const p = protocol || "ws";
   return `${p}://${h}:${port || 9876}/ws?token=${encodeURIComponent(t)}`;
 }
 

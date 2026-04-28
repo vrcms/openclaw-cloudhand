@@ -1347,7 +1347,7 @@ async function ensureRemoteConnection() {
   const host = (stored.remoteHost || '').trim()
   const port = stored.remotePort || 9876
   const token = (stored.remoteToken || '').trim()
-  const protocol = stored.remoteProtocol || (host === '127.0.0.1' || host === 'localhost' ? 'ws' : 'wss')
+  const protocol = stored.remoteProtocol || 'ws'
   if (!host || !token) return // 未配置，跳过
 
   remoteConnectPromise = (async () => {
